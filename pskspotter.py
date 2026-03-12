@@ -12,6 +12,7 @@ from pyhamtools.locator import calculate_distance as qth_distance
 
 args = None
 cinfo = None
+client = None
 
 
 freqs = {
@@ -110,6 +111,7 @@ def on_message(client, userdata, msg):
 def main():
     global args
     global cinfo
+    global client
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--call", required=True, help="Call sign")
@@ -144,5 +146,6 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("Exiting...")
-        client.disconnect()
+        if client is not None:
+            client.disconnect()
         sys.exit(0)
