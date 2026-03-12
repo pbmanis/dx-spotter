@@ -17,7 +17,7 @@ Since container already contains downloaded cty plist, you do not need specify o
 
 ## Install on local machine
 
-Because modern linux does not allow to use system-wide pip, you need use virtual env. Fortunately any modern system already have python atleasy 3.6, so this should not be problem.
+Because modern linux does not allow to use system-wide pip, you need use virtual env. Fortunately any modern system already have python atleast 3.11, so this should not be problem.
 
 ### Prepare virtual environment
  - python -m venv .venv
