@@ -66,7 +66,7 @@ def get_country_text(call):
         return "Unknown"
 
 
-def on_connect(client, userdata, flags, rc):
+def on_connect(client, userdata, flags, rc, properties):
     print("Connected with result code "+str(rc))
     client.subscribe("pskr/filter/v2/+/+/{}/#".format(args.call.upper()))
     client.subscribe("pskr/filter/v2/+/+/+/{}/#".format(args.call.upper()))
@@ -128,7 +128,7 @@ def main():
 
 
     print("Connecting to MQTT server")
-    client = mqtt.Client()
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     client.on_connect = on_connect
     client.on_message = on_message
     
