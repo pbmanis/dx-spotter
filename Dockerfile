@@ -1,5 +1,5 @@
-FROM docker.io/library/python:3.11-alpine
-RUN pip install --upgrade pip
+FROM docker.io/library/python:3.13-alpine
+RUN pip install --upgrade pip --root-user-action=ignore
 
 WORKDIR /app
 
@@ -12,7 +12,7 @@ RUN wget https://www.country-files.com/cty/cty.plist
 
 # Dependecies
 ADD requirements.txt /app/
-RUN pip install -r requirements.txt
+RUN pip install -r requirements.txt --root-user-action=ignore
 
 # App
 ADD pskspotter.py /app/
