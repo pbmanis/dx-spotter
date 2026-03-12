@@ -12,7 +12,6 @@ from pyhamtools.locator import calculate_distance as qth_distance
 
 args = None
 cinfo = None
-client = None
 
 
 freqs = {
@@ -111,7 +110,6 @@ def on_message(client, userdata, msg):
 def main():
     global args
     global cinfo
-    global client
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--call", required=True, help="Call sign")
@@ -139,13 +137,13 @@ def main():
     
     client.connect(broker_address, broker_port, 60)
     
-    client.loop_forever()
-
-if __name__ == "__main__":
     try:
-        main()
+        print("Starting MQTT loop")
+        client.loop_forever()
     except KeyboardInterrupt:
         print("Exiting...")
-        if client is not None:
-            client.disconnect()
+        client.disconnect()
         sys.exit(0)
+
+if __name__ == "__main__":
+    main()
