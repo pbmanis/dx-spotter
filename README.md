@@ -12,7 +12,7 @@ You can run this in container aswell
 run `podman build -t pskspotter:latest .`
 
 ### Run
-Since container already contains downloaded cty plist, you do not need specify or download extra. Just run it as `podman run -it --rm pskreporter:latest --call <YOUR CALL>`
+Since container already contains downloaded cty plist, you do not need specify or download extra. Just run it as `podman run -it --rm pskspotter:latest --call <YOUR CALL>`
 
 
 ## Install on local machine
