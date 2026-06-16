@@ -2,34 +2,28 @@
 
 Utility to show MQTT data from PSK Repoter in table, filter what you hear and where you are heard.
 
+The use case for this version is to monitor spots on a band, as provided by PSK reporter and a local wsjt-x monitoring a band. New DXCC on the band or overall are identified and shown. A radius around the home grid is used to filter spots that are local, rather than showing all spots. 
+
 Since it using MQTT it is very fast to show new data. And because it uses python, it will works on any platform, which supports python.
 
+Based on pskspotter from:
 
-## Build and run in container
-You can run this in container aswell
+https://github.com/petrkr/pskspotter.git
 
-### Build container image
-run `podman build -t pskspotter:latest .`
+Much of the updating was done as "pair coding" with Claude Code. 
 
-### Run
-Since container already contains downloaded cty plist, you do not need specify or download extra. Just run it as `podman run -it --rm pskspotter:latest --call <YOUR CALL>`
-
-
-## Install on local machine
-
-Because modern linux does not allow to use system-wide pip, you need use virtual env. Fortunately any modern system already have python atleast 3.11, so this should not be problem.
-
-### Prepare virtual environment
- - python -m venv .venv
- - source .venv/bin/activate
- - pip install --upgrade pip
- - pip install -r requirements.txt
+The changes from the original: 
+ - Uses pyqtgraph to create a window with a scrollable table, and a command panel on the left. 
+ - Reads an adif log file to look for prior contacts/dxcc's.
+ - Uses uv to build a local environment.
 
 
-### Running
-You need load that venv
+## Build the virtual environment.
 
-- source .venv/bin/activate
-- python --call <YOUR CALL>
+`uv sync`
 
-Optionally you can download cty plist from https://www.country-files.com/cty/cty.plist and then select it by parameter `--cty-plist`
+## run:
+
+python src/pskspotter.py <optional command arguments>
+
+You can download cty plist from https://www.country-files.com/cty/cty.plist and then select it by parameter `--cty-plist`
