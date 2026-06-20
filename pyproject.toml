@@ -1,7 +1,7 @@
 [project]
-name = "pskspotter"
+name = "dx-spotter"
 version = "0.1.0"
-description = "Add your description here"
+description = "program to collect spots from psk reporter and wsjt-x, and display them in a nice way, with comparisons to an adif log file"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -15,4 +15,5 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pillow>=12.2.0",
+    "pyinstaller>=6.21.0",
 ]
