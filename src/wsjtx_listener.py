@@ -1,3 +1,37 @@
+"""WSJT-X UDP listener and command sender for DX Spotter.
+
+Implements :class:`WsjtxListener`, which runs on a background thread and
+communicates with WSJT-X via the Qt/WSJT-X binary UDP protocol
+(big-endian ``QDataStream`` serialisation, magic ``0xADBCCBDA``).
+
+Incoming messages parsed:
+
+* **Heartbeat (type 0)** — fires :attr:`~WsjtxListener.on_heartbeat`.
+* **Status (type 1)** — updates dial frequency, mode, DX call, and TX state.
+* **Decode (type 2)** — extracts DX callsign / grid, applies the decode filter,
+  rate-limits spot emission, and calls :attr:`~WsjtxListener.on_spot`.
+* **Reply echo (type 4)** — logged for diagnostics only.
+
+Outgoing messages sent:
+
+* **Heartbeat (type 0)** — sent on first packet and every 15 s to keep our
+  client registered.
+* **Highlight Callsign (type 13)** — highlights a call in the band-activity
+  window.
+* **Switch Configuration (type 14)** — switches WSJT-X configuration preset.
+* **Configure (type 15)** — sets DX call, Rx DF, and optionally generates
+  standard messages.
+* **Reply (type 4)** — triggers a double-click on a matching band-activity row.
+
+Type aliases
+------------
+SpotCallback
+    ``(dx_call, dx_grid, snr, df_hz, mode, band, unix_time, msg, delta_t) → None``
+BusyCallback
+    ``(call) → None``
+HeartbeatCallback
+    ``() → None``
+"""
 import re
 import socket
 import struct
@@ -11,14 +45,31 @@ _GRID_RE = re.compile(r'^[A-R]{2}\d{2}([a-x]{2})?$', re.IGNORECASE)
 
 
 def _looks_like_call(s: str) -> bool:
+    # Heuristic callsign check against _CALL_RE; used to distinguish calls from
+    # signal reports and grid squares in decoded WSJT-X message text.
     return bool(_CALL_RE.match(s.upper()))
 
 
 def _looks_like_grid(s: str) -> bool:
+    # Heuristic Maidenhead locator check against _GRID_RE (4- or 6-char form).
     return bool(_GRID_RE.match(s))
 
 
 def freq_to_band(freq_hz: int) -> str:
+    """Convert an absolute frequency in Hz to a ham-band string.
+
+    Parameters
+    ----------
+    freq_hz : int
+        Absolute frequency in Hz (e.g. ``14_074_000`` for 20 m FT8).
+
+    Returns
+    -------
+    str
+        Band string such as ``'20m'``, ``'40m'``, etc.  Returns a fallback
+        string of the form ``'14.074MHz'`` when the frequency does not fall
+        within any known amateur band.
+    """
     MHz = freq_hz / 1_000_000
     for low, high, band in [
         (1.8,    2.0,    "160m"), (3.5,   4.0,   "80m"),  (5.3,    5.4,   "60m"),
@@ -32,43 +83,71 @@ def freq_to_band(freq_hz: int) -> str:
 
 
 class _BinReader:
-    """Simple big-endian binary reader for Qt/WSJT-X UDP packets."""
+    """Simple big-endian binary reader for Qt/WSJT-X UDP packets.
 
-    def __init__(self, data: bytes):
+    Maintains an internal position pointer that advances as each field is read.
+    All integer and float types follow big-endian (network) byte order, matching
+    Qt's ``QDataStream`` default.
+
+    Parameters
+    ----------
+    data : bytes
+        Raw UDP datagram bytes to read from.
+    """
+
+    def __init__(self, data: bytes) -> None:
+        # _d = raw packet bytes; _p = current read position
         self._d = data
         self._p = 0
 
     def uint8(self) -> int:
+        """Read one unsigned 8-bit integer and advance the position by 1."""
         v = self._d[self._p]
         self._p += 1
         return v
 
     def uint32(self) -> int:
+        """Read one unsigned 32-bit big-endian integer and advance by 4."""
         (v,) = struct.unpack_from('>I', self._d, self._p)
         self._p += 4
         return v
 
     def int32(self) -> int:
+        """Read one signed 32-bit big-endian integer and advance by 4."""
         (v,) = struct.unpack_from('>i', self._d, self._p)
         self._p += 4
         return v
 
     def uint64(self) -> int:
+        """Read one unsigned 64-bit big-endian integer and advance by 8."""
         (v,) = struct.unpack_from('>Q', self._d, self._p)
         self._p += 8
         return v
 
     def float64(self) -> float:
+        """Read one IEEE 754 double (big-endian) and advance by 8."""
         (v,) = struct.unpack_from('>d', self._d, self._p)
         self._p += 8
         return v
 
     def bool_(self) -> bool:
+        """Read one boolean byte (non-zero → ``True``) and advance by 1."""
         v = self._d[self._p] != 0
         self._p += 1
         return v
 
     def utf8(self) -> str:
+        """Read a Qt length-prefixed UTF-8 string and advance past it.
+
+        The string is encoded as a big-endian ``uint32`` length followed by
+        that many UTF-8 bytes.  A length of ``0xFFFFFFFF`` or ``0`` is
+        treated as a null / empty string and returns ``''``.
+
+        Returns
+        -------
+        str
+            Decoded string, or ``''`` for null/empty strings.
+        """
         n = self.uint32()
         if n in (0xFFFFFFFF, 0):
             return ''
@@ -86,52 +165,114 @@ HeartbeatCallback = Callable[[], None]
 
 
 class WsjtxListener:
-    """UDP listener for the WSJT-X network protocol (big-endian Qt serialization)."""
+    """UDP listener for the WSJT-X network protocol (big-endian Qt serialisation).
 
-    _MAGIC            = 0xADBCCBDA
-    _MSG_STATUS       = 1
-    _MSG_DECODE       = 2
-    _RESHOW_SECS      = 300  # re-show a call after 5 minutes of silence
+    Runs on a daemon background thread started by :meth:`start`.  All public
+    methods except :meth:`start` and :meth:`stop` may be called from any thread
+    (attribute writes are GIL-protected for simple types).
+
+    Outgoing commands use a persistent send socket bound to a fixed ephemeral
+    port so WSJT-X always sees the same ``(ip, port)`` client identity.
+
+    Class attributes
+    ----------------
+    _MAGIC : int
+        WSJT-X protocol magic number ``0xADBCCBDA`` used to validate incoming
+        packets.
+    _MSG_STATUS : int
+        WSJT-X message type 1 (Status).
+    _MSG_DECODE : int
+        WSJT-X message type 2 (Decode).
+    """
+
+    _MAGIC = 0xADBCCBDA
+    _MSG_STATUS = 1
+    _MSG_DECODE = 2
 
     def __init__(self, port: int, decode_filter: str, my_call: str | None,
                  on_spot: SpotCallback,
                  on_call_busy: BusyCallback | None = None,
                  on_call_active: BusyCallback | None = None,
                  on_heartbeat: 'HeartbeatCallback | None' = None,
-                 mcast_addr: str = '224.0.0.1'):
-        self.port            = port
-        self.decode_filter   = decode_filter.upper()  # 'CQ', 'ALL', 'ME'
-        self.my_call         = my_call.upper() if my_call else None
-        self.on_spot         = on_spot
-        self.on_call_busy    = on_call_busy
-        self.on_call_active  = on_call_active
-        self.on_heartbeat    = on_heartbeat
-        self._mcast_addr   = mcast_addr
-        self._dial_freq    = 0
-        self._wsjt_mode    = ''
-        self._de_grid      = ''
+                 mcast_addr: str = '224.0.0.1',
+                 reshow_secs: int = 300) -> None:
+        """Initialise the listener; call :meth:`start` to begin receiving packets.
+
+        Parameters
+        ----------
+        port : int
+            UDP port to listen on (must match WSJT-X Settings → Reporting →
+            UDP Server port, typically ``2237``).
+        decode_filter : str
+            Initial decode filter: ``'CQ'`` (CQ calls only), ``'ALL'`` (every
+            decode), or ``'ME'`` (only decodes addressed to ``my_call``).
+            Case-insensitive; stored upper-cased.
+        my_call : str or None
+            Operator's callsign, used by the ``'ME'`` filter.  ``None``
+            disables the ME filter.
+        on_spot : SpotCallback
+            Callable invoked (on the listener thread) for each new spot that
+            passes the rate-limiting gate.
+            Signature: ``(dx_call, dx_grid, snr, df_hz, mode, band,
+            unix_time, msg, delta_t) → None``.
+        on_call_busy : BusyCallback or None, optional
+            Called when a CQ caller is observed entering a QSO.
+            Signature: ``(call) → None``.
+        on_call_active : BusyCallback or None, optional
+            Called when a previously busy station resumes calling CQ.
+            Signature: ``(call) → None``.
+        on_heartbeat : HeartbeatCallback or None, optional
+            Called on the first received packet and on each incoming Heartbeat
+            (type 0).  Signature: ``() → None``.
+        mcast_addr : str, optional
+            Multicast group address to join on the receive socket.  Defaults to
+            ``'224.0.0.1'`` (standard WSJT-X multicast address).
+        reshow_secs : int, optional
+            Minimum seconds between successive spot-table entries for the same
+            callsign (rate-limiting gate).  Default is ``300`` (5 minutes).
+        """
+        self.port = port
+        self.decode_filter = decode_filter.upper()  # 'CQ', 'ALL', 'ME'
+        self.my_call = my_call.upper() if my_call else None
+        self.on_spot = on_spot
+        self.on_call_busy = on_call_busy
+        self.on_call_active = on_call_active
+        self.on_heartbeat = on_heartbeat
+        self._mcast_addr = mcast_addr
+        self._reshow_secs = reshow_secs
+        self._dial_freq = 0
+        self._wsjt_mode = ''
+        self._de_grid = ''
         self._call_times: dict[str, float] = {}
-        self._stop         = threading.Event()
+        self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._wsjt_host: str | None = None  # set from first received packet
-        self._wsjt_src_port: int  = 0     # WSJT-X's own socket port (send commands here)
+        self._wsjt_src_port: int = 0  # WSJT-X's own socket port (send commands here)
         self._send_sock: socket.socket | None = None  # persistent send socket
         # Diagnostic state — only log Status when these change
-        self._first_status: bool = True   # always print the very first Status
+        self._first_status: bool = True  # always print the very first Status
         self._last_dx_call: str = ''
-        self._last_tx_en:   bool = False
-        self._last_txing:   bool = False
+        self._last_tx_en: bool = False
+        self._last_txing: bool = False
         # Always-current decode fields for Reply (updated every decode period)
         self._latest_decode: dict[str, dict] = {}
         self._last_highlighted: str = ''  # call currently highlighted in band activity
         self._wsjt_client_id: str = ''   # WSJT-X's own client ID (from incoming packet headers)
 
     def start(self) -> None:
+        """Start the background UDP listener thread.
+
+        Spawns a daemon thread named ``'wsjt-udp'`` that binds to
+        :attr:`port`, joins the multicast group, and loops calling
+        :meth:`_handle` on each received datagram until :meth:`stop` is
+        called.
+        """
         self._thread = threading.Thread(target=self._run, daemon=True, name="wsjt-udp")
         self._thread.start()
         print(f"WSJT-X listener started on UDP port {self.port}")
 
     def stop(self) -> None:
+        """Signal the listener thread to exit on its next iteration."""
         self._stop.set()
 
     def _run(self) -> None:
@@ -235,15 +376,36 @@ class WsjtxListener:
     def reply_to_decode(self, time_ms: int, snr: int, df: int,
                         mode: str, message: str, delta_t: float = 0.0,
                         low_confidence: bool = False) -> None:
-        """Send Reply (type 4) to WSJT-X.
+        """Send a Reply (type 4) command to WSJT-X.
 
-        WSJT-X searches its band-activity table for a row matching all these
-        fields exactly (time_ms, snr, delta_t, df, mode, message, low_confidence)
-        then simulates a double-click on that row, setting the DX call, Rx DF,
+        WSJT-X searches its band-activity table for a row whose fields exactly
+        match ``(time_ms, snr, delta_t, df, mode, message, low_confidence)``
+        and simulates a double-click on that row, setting the DX call, Rx DF,
         and generating the standard exchange messages.
 
-        Requires 'Accept UDP requests' in WSJT-X Settings → Reporting.
-        All fields must exactly match the corresponding Decode packet fields.
+        Requires **Accept UDP requests** to be enabled in
+        WSJT-X Settings → Reporting.  All fields must exactly match the
+        values from the original :class:`_BinReader`-parsed Decode packet.
+
+        Parameters
+        ----------
+        time_ms : int
+            Milliseconds since UTC midnight from the Decode packet
+            (``QTime`` as ``quint32``).
+        snr : int
+            Signal-to-noise ratio in dB (signed, from the Decode packet).
+        df : int
+            Delta frequency (audio offset) in Hz (from the Decode packet).
+        mode : str
+            Mode string (e.g. ``'FT8'``), verbatim from the Decode packet.
+        message : str
+            Decoded message text, verbatim from the Decode packet
+            (e.g. ``'CQ W1AW FN31'``).
+        delta_t : float, optional
+            Time delta in seconds from the Decode packet (default ``0.0``).
+        low_confidence : bool, optional
+            Low-confidence flag from the Decode packet (default ``False``).
+            Must match exactly.
         """
         payload = (
             struct.pack('>I', time_ms)     # QTime quint32 ms since midnight
@@ -266,14 +428,29 @@ class WsjtxListener:
 
     def configure(self, rx_df: int, dx_call: str, dx_grid: str = '',
                   generate_messages: bool = True) -> None:
-        """Send Configure (type 15) to WSJT-X.
+        """Send a Configure (type 15) command to WSJT-X.
 
         Directly sets the DX call, Rx DF audio frequency, and optionally
-        triggers Generate Std Msgs — equivalent to typing the call and clicking
-        that button.  Does not require a matching entry in band activity.
+        triggers **Generate Std Msgs** — equivalent to typing the callsign
+        into the DX Call box and clicking that button.  Does not require a
+        matching entry in band activity.
 
-        Fields documented as "if max → no change" use 0xFFFFFFFF.
-        T/R Period 0 → no change; Fast Mode False → standard FT8/FT4.
+        Fields documented as "if max → no change" are sent as ``0xFFFFFFFF``.
+        T/R Period ``0`` means no change; Fast Mode ``False`` targets standard
+        FT8 / FT4 operation.
+
+        Parameters
+        ----------
+        rx_df : int
+            Receive audio frequency offset (DF) in Hz to set.
+        dx_call : str
+            DX callsign to enter in WSJT-X.  An empty string sends a null
+            QString (no change).
+        dx_grid : str, optional
+            DX station's Maidenhead grid square (default ``''`` = no change).
+        generate_messages : bool, optional
+            If ``True`` (default), WSJT-X generates standard exchange messages
+            immediately after setting the DX call.
         """
         MAX_U32 = 0xFFFFFFFF
         payload = (
@@ -292,11 +469,25 @@ class WsjtxListener:
               f"rx_df={rx_df} Hz  genMsg={generate_messages}")
 
     def reset_call_times(self) -> None:
-        """Clear the rate-limiting gate so all decoded calls can re-appear."""
+        """Clear the rate-limiting gate so all decoded calls can re-appear.
+
+        :attr:`_call_times` maps each callsign to the Unix timestamp of the
+        last time it was forwarded to the spot table.  Clearing it means every
+        callsign will appear on the next decode regardless of ``reshow_secs``.
+        Called when the decode filter changes so the table is repopulated with
+        fresh spots.
+        """
         self._call_times.clear()
 
     def switch_configuration(self, name: str) -> None:
-        """Send Switch Configuration (type 14) to WSJT-X."""
+        """Send Switch Configuration (type 14) to WSJT-X.
+
+        Parameters
+        ----------
+        name : str
+            Name of the WSJT-X configuration preset to activate (must match
+            a name defined in WSJT-X Settings → Configurations).
+        """
         self._send(self._build_msg(14, self._encode_utf8(name)))
         print(f"WSJT-X: requested Switch Configuration → '{name}'")
 
@@ -315,10 +506,25 @@ class WsjtxListener:
                        bg: tuple[int, int, int] | None = (255, 200, 0),
                        fg: tuple[int, int, int] | None = (0, 0, 0),
                        last_only: bool = False) -> None:
-        """Send Highlight Callsign (type 13) to WSJT-X.
+        """Send a Highlight Callsign (type 13) command to WSJT-X.
 
-        Clears the previous highlight then highlights the new callsign.
-        Pass bg=None to use an invalid (clear) color.
+        First clears the highlight on the previously highlighted callsign
+        (tracked in :attr:`_last_highlighted`), then applies the new highlight.
+
+        Parameters
+        ----------
+        callsign : str
+            Callsign to highlight in the WSJT-X band-activity window.
+        bg : tuple[int, int, int] or None, optional
+            RGB background colour as ``(r, g, b)`` with values 0–255.
+            Default is amber ``(255, 200, 0)``.  ``None`` sends an invalid
+            (transparent / clear) colour.
+        fg : tuple[int, int, int] or None, optional
+            RGB foreground (text) colour as ``(r, g, b)``.  Default is
+            black ``(0, 0, 0)``.  ``None`` sends an invalid colour.
+        last_only : bool, optional
+            If ``True``, highlight only the last occurrence of the callsign
+            in band activity (default ``False`` = highlight all occurrences).
         """
         clear = self._pack_qcolor(0, 0, 0, valid=False)
         if self._last_highlighted and self._last_highlighted != callsign:
@@ -344,8 +550,29 @@ class WsjtxListener:
     def get_latest_decode(self, call: str) -> dict | None:
         """Return the most recently received WSJT-X decode for this callsign.
 
-        Fields: ms (int), snr (int), delta_t (float), df (int), mode (str), msg (str).
-        Updated on every decode period regardless of the _RESHOW_SECS display gate.
+        The cache (``_latest_decode``) is updated on every decode period
+        regardless of the ``reshow_secs`` display gate, so this always
+        reflects the freshest available data for constructing a Reply.
+
+        Parameters
+        ----------
+        call : str
+            Callsign to look up (case-insensitive).
+
+        Returns
+        -------
+        dict or None
+            Dict with keys:
+
+            * ``ms`` (int) — milliseconds since UTC midnight.
+            * ``snr`` (int) — signal-to-noise ratio in dB.
+            * ``delta_t`` (float) — time delta in seconds.
+            * ``df`` (int) — audio frequency offset in Hz.
+            * ``mode`` (str) — mode string (e.g. ``'FT8'``).
+            * ``msg`` (str) — verbatim decoded message text.
+            * ``low_confidence`` (bool) — low-confidence flag.
+
+            Returns ``None`` when no decode has been seen for this callsign.
         """
         return self._latest_decode.get(call.upper())
 
@@ -460,7 +687,7 @@ class WsjtxListener:
                     return   # can't compute band — skip spot table emission
 
                 now = time.time()
-                if now - self._call_times.get(dx_call, 0.0) < self._RESHOW_SECS:
+                if now - self._call_times.get(dx_call, 0.0) < self._reshow_secs:
                     return   # suppress table update; latest decode already saved
                 self._call_times[dx_call] = now
 

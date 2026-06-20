@@ -1,0 +1,153 @@
+DX Spotter — docstring queries and open questions
+===================================================
+Generated during the docstring pass (June 2026).
+
+-----------------------------------------------------------------------------
+adif_log.py
+-----------------------------------------------------------------------------
+
+1. ADIFLog.status() — is this method still called externally, or is it only a
+   legacy API kept for backward compatibility?  award_status() is the current
+   primary method, but status() is also exported.  If it is truly unused by
+   external code it could be deprecated.
+
+2. ADIFLog.confirmed_band_modes() and confirmed_details() / worked_details() —
+   are these called anywhere outside adif_log.py itself?  A grep of the project
+   finds no call sites in the GUI or controller code; they may be dead weight
+   from a previous UI design.
+
+3. The _CF_EPOCH constant (978307200) converts RumLogNG's CoreData timestamps
+   to Unix time.  Is there a risk of daylight-saving or timezone offset in
+   ZDATETIME values from RumLogNG, or are they always stored as UTC seconds
+   since 2001-01-01?
+
+4. The RumLogNG query uses ZLOTWQSL = 'X' for LoTW confirmed and ZQSL = 'X'
+   for paper QSL.  Are there other confirmation values in RumLogNG (e.g. 'Y',
+   'V') that should also count as confirmed, or is 'X' the only confirmed
+   value in all RumLogNG versions?
+
+-----------------------------------------------------------------------------
+appconfig.py
+-----------------------------------------------------------------------------
+
+5. AppConfig.mode default is 'FC' (FT8 + FT4 + FT2 + CW combined filter).
+   Is 'FC' an abbreviation coined for this project, or does it appear in any
+   external tool/standard?  Should it be documented somewhere visible to new
+   users (e.g. a help tooltip)?
+
+6. AppConfig.my_grid default is 'FM05kw' (a grid square in the mid-Atlantic
+   US).  This is clearly the developer's own grid and will be wrong for any
+   other user.  Should the app prompt for this on first launch if the config
+   file does not exist?
+
+-----------------------------------------------------------------------------
+dxspotter.py
+-----------------------------------------------------------------------------
+
+7. on_message: rx_grids = ["FM", "FN", "FL", "EL", "EN", "EM"] — this
+   hardcoded list restricts PSK Reporter spots to those reported by stations
+   in the US East Coast / Southeast Maidenhead grid prefixes.  This is a
+   significant geographic filter that is invisible to the user and cannot be
+   changed without editing the source.  Should it become a config option
+   (e.g. a list of grid prefixes in config.toml [filters])?
+
+8. DXSpotter._qsy_rigctld() — the method body only computes the target mode
+   string; the actual socket write to rigctld (localhost:4532) is commented
+   out / removed.  Is this intentional (planned for a future release) or was
+   the socket code accidentally deleted?  The method is called from
+   _apply_settings() when the band changes, so it silently does nothing.
+
+9. DXSpotter.on_message: when direction == "TX", the 'call' variable is set
+   to payload['rc'] (the reporter callsign) and 'loc' is set to payload['rl']
+   (the reporter locator).  In the spot dict emitted to the table, 'range' is
+   still computed as qth_distance(my_grid, payload['rl']).  For a TX spot this
+   means 'range' is the distance from our grid to the reporter, not to the DX
+   station.  Is this intentional?
+
+10. DXSpotter._on_spots_expired: psk_counter and wsjt_counter are decremented
+    by the number of expired rows, but they are never reset between sessions.
+    If a user runs the app for many hours, could these go negative (if more
+    rows expire than were counted)?  max(0, ...) guards are in place, but
+    should there be a periodic sanity-check reset?
+
+11. The 'source' key in the spot dict emitted by on_message is absent (only
+    _on_wsjt_spot adds source='wsjt').  Downstream code uses
+    spot.get('source', 'psk') defensively, which works, but it would be
+    cleaner to always set source='psk' explicitly in on_message.
+
+-----------------------------------------------------------------------------
+wsjtx_listener.py
+-----------------------------------------------------------------------------
+
+12. WsjtxListener._RESHOW_SECS = 300 (5 minutes) — is this value appropriate
+    for all operating conditions?  On a busy band during a contest, a station
+    may genuinely reappear after only 1–2 minutes.  Should this be
+    user-configurable via AppConfig?
+
+13. WsjtxListener._extract_call_grid: the CQ parser skips tokens of length
+    <= 2 that are alphabetic (e.g. 'EU', 'NA').  This handles 'CQ DX W1AW'
+    and 'CQ EU W1AW' correctly, but would also skip a two-letter callsign
+    suffix like '/P after a slash.  Are there known edge cases that break the
+    heuristic (e.g. 'CQ OZ W1AW' where 'OZ' is a valid Danish callsign prefix
+    AND a short regional token)?
+
+14. WsjtxListener._handle: when mtype == 4 (Reply echo), the method logs it
+    but takes no action.  Is there any scenario where the app should react to
+    a Reply echo (e.g. to confirm the command was received)?
+
+15. WsjtxListener: the _wsjt_client_id field captures WSJT-X's own client ID
+    from incoming packet headers, but it is never used in outgoing messages
+    (all outgoing messages use the hardcoded id 'dxspotter').  Is this
+    intentional?  Some WSJT-X companion apps echo the client ID back.
+
+16. _BinReader.utf8(): a length of 0 is treated the same as 0xFFFFFFFF (null
+    QString) and returns ''.  In Qt QDataStream, a zero-length QString is a
+    valid empty string (not null), while 0xFFFFFFFF is null.  Is the
+    distinction between empty string and null string ever significant for any
+    of the fields parsed from WSJT-X packets?
+
+-----------------------------------------------------------------------------
+spot_window.py
+-----------------------------------------------------------------------------
+
+17. COLUMNS list: 'dHz' is used as the column header for the audio frequency
+    offset (DF in Hz).  The domain knowledge note says "dHz in the UI means
+    the same thing" as DF.  Is 'dHz' an intentional abbreviation (delta-Hz),
+    or should it be labeled 'DF Hz' or 'Audio Hz' for clarity to new users?
+
+18. SpotTable._flush_pending: when deduplicating, deduped[spot['call']] = spot
+    keeps only the *last* spot for a given call in the batch.  If a call is
+    heard multiple times within 250 ms (e.g. on multiple bands), only the
+    final spot is retained.  Is this the desired behaviour, or should all
+    band/mode combinations be kept as separate rows?
+
+19. _award_qsl_label: for status == 'over100', the label is
+    "New &  band>100 [{abbr}]" (note the double space and ampersand — appears
+    to be a placeholder string).  Should this be cleaned up to something like
+    "New / Band full [{abbr}]" or similar user-facing text?
+
+20. SpotTable._on_context_menu: right-click is only active on the QSL column
+    (item.column() != QSL_COL returns early).  Is this intentional, or would
+    it be useful to have the context menu available anywhere on the row?
+
+-----------------------------------------------------------------------------
+General / cross-cutting
+-----------------------------------------------------------------------------
+
+21. The 'range' key in the spot dict means different things for PSK Reporter
+    spots (distance from my_grid to the reporter station) vs. WSJT-X spots
+    (hardcoded to 0 because the range filter is not applied).  This
+    asymmetry is noted in comments but is not visible in the column label.
+    Should the Range column tooltip or label indicate this distinction?
+
+22. The 'distance' key is the path distance between the DX sender and the
+    reporter station (sender to reporter) for PSK Reporter spots, and the
+    distance from my_grid to the DX station for WSJT-X spots (dist_km).
+    Again there is an asymmetry between sources.  Worth noting in the column
+    header tooltip.
+
+23. AppConfig stores wsjt_port but DXSpotter also accepts --wsjt-port on the
+    CLI.  If these differ, CLI wins.  Is the merged value written back to
+    config on exit?  (It appears to be, via _save_config → _collect_settings,
+    but _collect_settings reads from the ParameterTree which does not expose
+    wsjt_port — so the port set only via CLI may not be persisted.)

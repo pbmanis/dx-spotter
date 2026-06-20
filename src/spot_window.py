@@ -1,3 +1,22 @@
+"""Spot table widget and supporting helpers for DX Spotter.
+
+The central UI component is :class:`SpotTable`, a ``QWidget`` wrapping a
+``QTableWidget`` that displays incoming DX spots from PSK Reporter and WSJT-X,
+colours rows by DXCC award status, and provides right-click QSO-detail context
+menus.
+
+Module-level constants
+----------------------
+COLUMNS : list[str]
+    Ordered list of column header strings for the spot table.
+AGE_COL, QSL_COL, CALL_COL : int
+    Pre-computed column indices for the Age, QSL, and DX Call columns.
+AWARD_COLORS : dict[str, tuple[str, str]]
+    Maps award status → ``(background_hex, foreground_hex)`` colour pairs.
+_US_CANADA_DXCC : frozenset[int]
+    ADIF DXCC entity numbers for mainland US (291) and Canada (1), excluded
+    by the ``'dxcc_only'`` display filter.
+"""
 from __future__ import annotations
 
 import os
@@ -15,15 +34,19 @@ if TYPE_CHECKING:
     from adif_log import ADIFLog
 
 
-COLUMNS = ["#", "Src", "Dir", "Time", "DX Call", "DX Grid", "SNR", "Country",
-           "dHz", "Dist", "Mode", "Band", "Reporter", "Rptr Grid", "Range", "Age", "QSL"]
+COLUMNS = ["DX Call", "Dir", "Country", "DX Grid", "Time", "Age",
+           "dHz", "Dist", "Mode", "SNR", "Band", "Src", "Reporter", "Rptr Grid",
+           "Range", "QSL"]
 
 # DXCC entity numbers for mainland US and Canada (excluded by 'dxcc_only' filter)
 _US_CANADA_DXCC: frozenset[int] = frozenset({1, 291})
 
-AGE_COL  = COLUMNS.index("Age")
-QSL_COL  = COLUMNS.index("QSL")
+AGE_COL = COLUMNS.index("Age")
+QSL_COL = COLUMNS.index("QSL")
 CALL_COL = COLUMNS.index("DX Call")
+# Separate role for the spot-action dict on CALL_COL (avoids collision with
+# the dxcc/band/mode dict stored in UserRole on the same cell).
+_SPOT_ROLE = Qt.ItemDataRole.UserRole + 1
 
 # 3-state award colour scheme
 # confirmed = grey (already in the log for this award)
@@ -34,6 +57,7 @@ AWARD_COLORS: dict[str, tuple[str, str]] = {
     'worked':    ("#b85000", "#ffffff"),
     'new':       ("#8b0000", "#ffffff"),
     'n/a':       ("#505050", "#808080"),  # same bg as confirmed, dimmer text
+    'over100':   ("#004040", "#00e0e0"),  # 5BD-only: band already ≥100 confirmed
 }
 
 _CRIT_ABBR: dict[str, str] = {
@@ -47,6 +71,13 @@ _CRIT_ABBR: dict[str, str] = {
 
 
 def make_app_icon() -> QIcon:
+    """Load and return the DX Spotter application icon.
+
+    Returns
+    -------
+    QIcon
+        Icon loaded from ``src/icons/dxspot.png`` relative to this module.
+    """
     path = os.path.join(os.path.dirname(__file__), "icons", "dxspot.png")
     return QIcon(path)
 
@@ -63,6 +94,14 @@ def _format_age(seconds: int) -> str:
 
 def _fmt_date(d: str) -> str:
     return f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 else d
+
+
+def _effective_status(status: str, criterion: str, band: str, adif) -> str:
+    """For 5BD only: promote 'new' to 'over100' when the band already has ≥100 confirmed."""
+    if status == 'new' and criterion == '5bd' and adif is not None:
+        if adif.confirmed_5bd_count(band) >= 100:
+            return 'over100'
+    return status
 
 
 def _award_qsl_label(status: str, criterion: str, band: str,
@@ -89,13 +128,21 @@ def _award_qsl_label(status: str, criterion: str, band: str,
         return f"Wkd [{abbr}]"
     if status == 'n/a':
         return f"— [{abbr}]"
+    if status == 'over100':
+        return f"New &  band>100 [{abbr}]"
     return f"New [{abbr}]"
 
 
 class _AgeItem(QTableWidgetItem):
-    """Age column item: displays human-readable age, sorts by unix_time (UserRole)."""
+    """Age column item: displays human-readable age, sorts by unix_time stored in UserRole.
+
+    Overrides ``__lt__`` so that Qt's built-in sort compares by Unix timestamp
+    (larger timestamp = more recent = smaller displayed age) rather than by the
+    human-readable text string.
+    """
+
     def __lt__(self, other: QTableWidgetItem) -> bool:
-        my_ts    = self.data(Qt.ItemDataRole.UserRole)
+        my_ts = self.data(Qt.ItemDataRole.UserRole)
         other_ts = other.data(Qt.ItemDataRole.UserRole)
         if isinstance(my_ts, (int, float)) and isinstance(other_ts, (int, float)):
             return my_ts > other_ts   # larger timestamp = more recent = smaller age
@@ -103,13 +150,45 @@ class _AgeItem(QTableWidgetItem):
 
 
 class SpotTable(QWidget):
-    """Scrollable spot table — designed to be embedded in a DockArea dock."""
+    """Scrollable spot table designed to be embedded in a DockArea dock.
 
-    spot_activated = pyqtSignal(dict)  # double-click on a row → DXSpotter
+    Spots arrive via :meth:`add_spot` (called from the Qt main thread through
+    the :attr:`~main_window.MainWindow.new_spot` signal) and are buffered in
+    ``_pending_spots``.  A 250 ms :class:`~PyQt6.QtCore.QTimer` flushes the
+    buffer in batch, deduplicating by callsign so only the most recent spot
+    per call is kept.
+
+    A separate 15 s timer updates the Age column and removes rows that have
+    exceeded ``_max_age_secs``.
+
+    Each row is coloured according to the active DXCC award criterion and the
+    spot's mode, using the :data:`AWARD_COLORS` palette.  When the criterion
+    or ADIF log changes, :meth:`set_criterion` and :meth:`set_adif_log` trigger
+    a full re-style pass.
+
+    Signals
+    -------
+    spot_activated : pyqtSignal(dict)
+        Emitted when the user double-clicks a spot row.  The dict contains
+        the spot-action fields stored in ``_SPOT_ROLE`` on the DX Call cell.
+    spots_expired : pyqtSignal(int, int)
+        Emitted after the age-expiry pass with ``(psk_removed, wsjt_removed)``
+        counts so :class:`~dxspotter.DXSpotter` can decrement its counters.
+    """
+
+    spot_activated = pyqtSignal(dict)   # double-click on a row → DXSpotter
+    spots_expired  = pyqtSignal(int, int)  # (psk_removed, wsjt_removed) when rows age out
 
     _MODE_SORT: dict[str, int] = {"CW": 0, "SSB": 1, "FT4": 2, "FT8": 3, "FT2": 4}
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        """Create the spot table widget and start internal timers.
+
+        Parameters
+        ----------
+        parent : QWidget or None, optional
+            Optional Qt parent widget.
+        """
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -163,13 +242,27 @@ class SpotTable(QWidget):
         self._display_filter: str = 'all'
         self._dimmed_calls: set[str] = set()
         self._selected_call: str = ''
+        self._max_age_secs: int = 30 * 60  # 0 = no expiry
 
     # -- public interface -----------------------------------------------------
 
     def add_spot(self, spot: dict) -> None:
+        """Queue a spot for the next batch-flush cycle.
+
+        This method is called from the Qt main thread via the
+        :attr:`~main_window.MainWindow.new_spot` signal.  The spot is not
+        inserted into the table immediately; it is appended to
+        ``_pending_spots`` and processed by :meth:`_flush_pending` every 250 ms.
+
+        Parameters
+        ----------
+        spot : dict
+            Spot payload dict (see module docstring for key descriptions).
+        """
         self._pending_spots.append(spot)
 
     def clear(self) -> None:
+        """Remove all rows from the table and reset transient state."""
         self._pending_spots.clear()
         self._dimmed_calls.clear()
         self._selected_call = ''
@@ -199,7 +292,7 @@ class SpotTable(QWidget):
     def undim_call(self, call: str) -> None:
         """Restore full award colors for a callsign that has returned to calling CQ."""
         self._dimmed_calls.discard(call)
-        adif      = self._adif_log
+        adif = self._adif_log
         criterion = self._criterion
         for row in range(self.table.rowCount()):
             item = self.table.item(row, CALL_COL)
@@ -213,7 +306,8 @@ class SpotTable(QWidget):
             mode = data.get('mode', '')
             if adif is not None:
                 if adif.mode_matches_criterion(mode, criterion):
-                    status = adif.award_status(dxcc, band, criterion)
+                    status = _effective_status(adif.award_status(dxcc, band, criterion),
+                                               criterion, band, adif)
                 else:
                     status = 'n/a'
             else:
@@ -227,15 +321,53 @@ class SpotTable(QWidget):
                     cell.setBackground(bg)
                     cell.setForeground(fg)
 
-    def set_adif_log(self, adif_log: ADIFLog | None) -> None:
+    def set_adif_log(self, adif_log: 'ADIFLog | None') -> None:
+        """Replace the contact log used for award-status colouring.
+
+        Parameters
+        ----------
+        adif_log : ADIFLog or None
+            New log instance, or ``None`` to clear (all spots coloured as
+            ``'new'``).  Call :meth:`set_criterion` after this to trigger a
+            re-style pass.
+        """
         self._adif_log = adif_log
 
     def set_criterion(self, criterion: str) -> None:
+        """Set the active award criterion and restyle all visible rows.
+
+        Also re-applies the display filter because the ``'unconfirmed'``
+        filter depends on the current criterion.
+
+        Parameters
+        ----------
+        criterion : str
+            Award criterion key (see :meth:`~adif_log.ADIFLog.award_status`).
+        """
         self._criterion = criterion
         self._restyle_all()
         self._apply_display_filter()  # 'unconfirmed' depends on criterion
 
+    def set_max_age(self, minutes: int) -> None:
+        """Set the maximum spot age; older rows are removed on the next timer tick.
+
+        Parameters
+        ----------
+        minutes : int
+            Spots older than this many minutes are expired.  ``0`` disables
+            expiry (rows are kept indefinitely).
+        """
+        self._max_age_secs = minutes * 60
+
     def set_display_filter(self, filter_str: str) -> None:
+        """Apply a row-visibility filter to the spot table.
+
+        Parameters
+        ----------
+        filter_str : str
+            One of ``'all'`` (no filtering), ``'dxcc_only'`` (hide US/Canada
+            entities), or ``'unconfirmed'`` (hide confirmed-DXCC rows).
+        """
         self._display_filter = filter_str
         self._apply_display_filter()
 
@@ -273,7 +405,13 @@ class SpotTable(QWidget):
     def _flush_pending(self) -> None:
         if not self._pending_spots:
             return
+        now = time.time()
         spots, self._pending_spots = self._pending_spots, []
+        if self._max_age_secs > 0:
+            spots = [s for s in spots
+                     if now - s.get('unix_time', now) <= self._max_age_secs]
+        if not spots:
+            return
         deduped: dict[str, dict] = {}
         for spot in spots:
             deduped[spot['call']] = spot
@@ -291,11 +429,12 @@ class SpotTable(QWidget):
         band = spot.get('b', '')
         mode = spot.get('md', '')
 
-        adif      = self._adif_log
+        adif = self._adif_log
         criterion = self._criterion
         if adif is not None:
             if adif.mode_matches_criterion(mode, criterion):
-                status = adif.award_status(dxcc, band, criterion)
+                status = _effective_status(adif.award_status(dxcc, band, criterion),
+                                           criterion, band, adif)
                 conf_list, wkd_list = adif.criterion_qso_details(dxcc, band, criterion)
             else:
                 status, conf_list, wkd_list = 'n/a', [], []
@@ -319,23 +458,22 @@ class SpotTable(QWidget):
         qsl_text = _award_qsl_label(status, criterion, band, conf_list, wkd_list)
 
         values = [
-            f"{spot['counter']:06d}",
-            spot.get('source', 'psk'),           # Src
-            spot['direction'],
-            spot['timestamp'],
-            spot['call'],
+            spot['call'],                        # DX Call
+            spot['direction'],                   # Dir
+            spot['country'],                     # Country
             spot['loc'][:6],                     # DX Grid — max 6 chars
-            f"{spot['rp']} dB",
-            spot['country'],
-            str(spot['freq_offset']),            # Offset Hz — unit in header
-            str(spot['distance']),               # Dist km — unit in header
-            spot['md'],
-            spot['b'],
-            spot['rc'],
+            spot['timestamp'],                   # Time
+            _format_age(int(time.time() - spot['unix_time'])),  # Age
+            str(spot['freq_offset']),            # dHz
+            str(spot['distance']),               # Dist
+            spot['md'],                          # Mode
+            f"{spot['rp']} dB",                  # SNR
+            spot['b'],                           # Band
+            spot.get('source', 'psk'),           # Src
+            spot['rc'],                          # Reporter
             spot['rl'][:6],                      # Rptr Grid — max 6 chars
-            f"{range_km}", #  km ({range_km * 0.621371:.1f} mi)",
-            _format_age(int(time.time() - spot['unix_time'])),
-            qsl_text,
+            f"{range_km}",                       # Range
+            qsl_text,                            # QSL
         ]
 
         wsjt = spot.get('source') == 'wsjt'
@@ -351,10 +489,11 @@ class SpotTable(QWidget):
                 item.setData(Qt.ItemDataRole.UserRole, {'dxcc': dxcc, 'band': band, 'mode': mode})
             self.table.setItem(row, col, item)
 
-        # store fields needed by the double-click handler on column 0
-        counter_item = self.table.item(row, 0)
+        # store spot-action dict on CALL_COL using _SPOT_ROLE (UserRole is
+        # already used for the dxcc/band/mode dict set in the loop above)
+        counter_item = self.table.item(row, CALL_COL)
         if counter_item is not None:
-            counter_item.setData(Qt.ItemDataRole.UserRole, {
+            counter_item.setData(_SPOT_ROLE, {
                 'call':        spot['call'],
                 'md':          mode,
                 'freq_offset': spot.get('freq_offset', 0),
@@ -375,10 +514,10 @@ class SpotTable(QWidget):
     # -- single-click: bold selection -----------------------------------------
 
     def _set_row_font(self, row: int, bold: bool) -> None:
-        counter_item = self.table.item(row, 0)
+        counter_item = self.table.item(row, CALL_COL)
         is_wsjt = False
         if counter_item is not None:
-            data = counter_item.data(Qt.ItemDataRole.UserRole)
+            data = counter_item.data(_SPOT_ROLE)
             if isinstance(data, dict):
                 is_wsjt = data.get('source') == 'wsjt'
         if bold:
@@ -407,17 +546,17 @@ class SpotTable(QWidget):
     # -- double-click handler -------------------------------------------------
 
     def _on_double_click(self, item: QTableWidgetItem) -> None:
-        counter_item = self.table.item(item.row(), 0)
+        counter_item = self.table.item(item.row(), CALL_COL)
         if counter_item is None:
             return
-        spot_data = counter_item.data(Qt.ItemDataRole.UserRole)
+        spot_data = counter_item.data(_SPOT_ROLE)
         if isinstance(spot_data, dict):
             self.spot_activated.emit(spot_data)
 
     # -- restyle on criterion change ------------------------------------------
 
     def _restyle_all(self) -> None:
-        adif      = self._adif_log
+        adif = self._adif_log
         criterion = self._criterion
         self.table.setSortingEnabled(False)
         self.table.setUpdatesEnabled(False)
@@ -434,7 +573,8 @@ class SpotTable(QWidget):
 
             if adif is not None:
                 if adif.mode_matches_criterion(mode, criterion):
-                    status = adif.award_status(dxcc, band, criterion)
+                    status = _effective_status(adif.award_status(dxcc, band, criterion),
+                                               criterion, band, adif)
                     conf_list, wkd_list = adif.criterion_qso_details(dxcc, band, criterion)
                 else:
                     status, conf_list, wkd_list = 'n/a', [], []
@@ -462,13 +602,35 @@ class SpotTable(QWidget):
 
     def _update_ages(self) -> None:
         now = time.time()
+        expired_rows: list[tuple[int, str]] = []  # (row, source)
         for row in range(self.table.rowCount()):
             item = self.table.item(row, AGE_COL)
             if item is None:
                 continue
             unix_time = item.data(Qt.ItemDataRole.UserRole)
-            if unix_time is not None:
-                item.setText(_format_age(int(now - unix_time)))
+            if unix_time is None:
+                continue
+            age = now - unix_time
+            if self._max_age_secs > 0 and age > self._max_age_secs:
+                counter_item = self.table.item(row, CALL_COL)
+                source = 'psk'
+                if counter_item is not None:
+                    d = counter_item.data(_SPOT_ROLE)
+                    if isinstance(d, dict):
+                        source = d.get('source', 'psk')
+                expired_rows.append((row, source))
+            else:
+                item.setText(_format_age(int(age)))
+
+        psk_removed = wsjt_removed = 0
+        for row, source in reversed(expired_rows):
+            self.table.removeRow(row)
+            if source == 'wsjt':
+                wsjt_removed += 1
+            else:
+                psk_removed += 1
+        if psk_removed or wsjt_removed:
+            self.spots_expired.emit(psk_removed, wsjt_removed)
 
     # -- context menu ---------------------------------------------------------
 
