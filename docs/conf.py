@@ -9,10 +9,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from version import __version__  # noqa: E402
 
 project = "DX Spotter"
-author = "Paul B. Manis, NC3G"
+author = r"\normalfont\small \hfill \begin{tabular}{r} Concept, Design, Debugging, Testing: Paul B. Manis (NC3G)"
+author += r" \\ \small Implementation: Claude Code, powered by Claude Sonnet 4.6 (model ID: claude-sonnet-4-6)."
+author += r" \\ \small PSK Reporter MQTT reading code: Petr Kracik (OK1RP)  \end{tabular}"
 copyright = "2024-2026, Paul Manis"
+license = "MIT License"
 release = __version__
 version = __version__
+show_authors = True
 
 # -- General configuration -----------------------------------------------------
 extensions = [

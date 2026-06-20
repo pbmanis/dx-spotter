@@ -6,6 +6,13 @@ DX Spotter is a desktop application for ham radio operators that monitors
 (via UDP) for DX spots, and colours each spot by its DXCC award status
 relative to the operator's contact log.
 
+The application is partly based on (and originally forked from) code to handle MQTT from PSK Reporter written by
+Petr Kracik (OK1RP). The concept to extend this to also take input from WSJT-X and its 
+derivaties, to create a GUI wrapper to generate the table and selection criteria, and to confirm that 
+what is displayed is useful, hopefully correct, and general, was from Paul Manis (NC3G). 
+The main application code was implemented by Claude Code, powered by Claude Sonnet 4.6 (model ID: claude-sonnet-4-6), as
+an experimental "pair coding" effort with Paul Manis. The project is licensed under the MIT License.
+
 .. toctree::
    :maxdepth: 2
    :caption: User Guide
