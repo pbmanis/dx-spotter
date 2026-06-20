@@ -3,6 +3,10 @@ dgus/DWIN_SET/*.icl
 dgus/DWIN_SET/*.bin
 dgus/image/*.png
 
+# OS files
+.DS_Store
+Thumbs.db
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
