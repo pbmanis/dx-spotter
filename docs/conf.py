@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from version import __version__  # noqa: E402
 
 project = "DX Spotter"
-author = "Paul Manis"
+author = "Paul B. Manis, NC3G"
 copyright = "2024-2026, Paul Manis"
 release = __version__
 version = __version__
@@ -51,3 +51,21 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 html_theme = "furo"
 html_static_path = ["_static"]
 html_title = "DX Spotter"
+
+# -- LaTeX / PDF output --------------------------------------------------------
+latex_engine = "xelatex"
+latex_documents = [
+    (
+        "index",                   # toctree root
+        "dxspotter.tex",           # output .tex filename
+        f"DX Spotter V{release}",  # document title
+        author,
+        "manual",                  # document class
+    ),
+]
+latex_elements = {
+    "papersize": "letterpaper",
+    "pointsize": "11pt",
+    # Keep the default Sphinx preamble; add nothing extra.
+    "preamble": "",
+}
