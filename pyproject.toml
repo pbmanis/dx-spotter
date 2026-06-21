@@ -1,9 +1,17 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tools"]
+
 [project]
 name = "dx-spotter"
 version = "0.1.0"
 description = "program to collect spots from psk reporter and wsjt-x, and display them in a nice way, with comparisons to an adif log file"
 readme = "README.md"
 requires-python = ">=3.13"
+
 dependencies = [
     "colorama",
     "pyhamtools",
@@ -12,11 +20,24 @@ dependencies = [
     "pyqt6>=6.11.0",
 ]
 
+[project.scripts]
+dedup = "tools.adif_dedup:main"
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.pyright]
+pythonVersion = "3.13"
+extraPaths = ["src"]
+
 [dependency-groups]
 dev = [
     "furo>=2025.12.19",
     "pillow>=12.2.0",
     "pyinstaller>=6.21.0",
+    "pytest>=9.1.1",
     "sphinx>=8.0",
     "sphinx-autodoc-typehints>=3.11.0",
 ]
