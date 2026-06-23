@@ -727,12 +727,15 @@ class WsjtxListener:
                 return parts[i], grid
             return None
 
-        if self.decode_filter == 'ALL' and _looks_like_call(parts[0]):
-            return parts[0], ''
+        # Non-CQ messages: "<CALLED_CALL> <TX_CALL> <report/grid/...>"
+        # parts[1] is the transmitting (spotted) station; parts[0] is the called station.
+        if self.decode_filter == 'ALL' and len(parts) >= 2 and _looks_like_call(parts[0]) and _looks_like_call(parts[1]):
+            grid = parts[2] if len(parts) >= 3 and _looks_like_grid(parts[2]) else ''
+            return parts[1], grid
 
         if self.decode_filter == 'ME' and self.my_call and len(parts) >= 2:
-            target = parts[1].upper().rstrip('/P')
-            if target == self.my_call and _looks_like_call(parts[0]):
-                return parts[0], ''
+            called = parts[0].upper().rstrip('/P')
+            if called == self.my_call and _looks_like_call(parts[1]):
+                return parts[1], ''
 
         return None
