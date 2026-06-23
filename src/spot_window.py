@@ -34,8 +34,8 @@ if TYPE_CHECKING:
     from adif_log import ADIFLog
 
 
-COLUMNS = ["DX Call", "Dir", "Country", "DX Grid", "Time", "Age",
-           "dHz", "Dist", "Mode", "SNR", "Band", "Src", "Reporter", "Rptr Grid",
+COLUMNS = ["DX Call", "SNR", "Country", "DX Grid", "Time", "Age",
+           "dHz", "Dist", "Mode", "Band", "Src", "Reporter", "Rptr Grid",
            "Range", "QSL"]
 
 # DXCC entity numbers for mainland US and Canada (excluded by 'dxcc_only' filter)
@@ -62,6 +62,7 @@ AWARD_COLORS: dict[str, tuple[str, str]] = {
 
 _CRIT_ABBR: dict[str, str] = {
     '5bd':     '5BD',
+    'warc':    'WARC',
     'cw':      'CW',
     'mixed':   'Mix',
     'digital': 'Dig',
@@ -111,6 +112,8 @@ def _award_qsl_label(status: str, criterion: str, band: str,
     abbr = _CRIT_ABBR.get(criterion, criterion.upper())
     if criterion == '5bd' and band:
         abbr = f"5BD/{band.lower()}"
+    elif criterion == 'warc' and band:
+        abbr = f"WARC/{band.lower()}"
 
     if status == 'confirmed' and conf_list:
         first = conf_list[0]
@@ -459,7 +462,7 @@ class SpotTable(QWidget):
 
         values = [
             spot['call'],                        # DX Call
-            spot['direction'],                   # Dir
+            f"{spot['rp']} dB",                  # SNR
             spot['country'],                     # Country
             spot['loc'][:6],                     # DX Grid — max 6 chars
             spot['timestamp'],                   # Time
@@ -467,7 +470,6 @@ class SpotTable(QWidget):
             str(spot['freq_offset']),            # dHz
             str(spot['distance']),               # Dist
             spot['md'],                          # Mode
-            f"{spot['rp']} dB",                  # SNR
             spot['b'],                           # Band
             spot.get('source', 'psk'),           # Src
             spot['rc'],                          # Reporter
@@ -496,6 +498,7 @@ class SpotTable(QWidget):
             counter_item.setData(_SPOT_ROLE, {
                 'call':        spot['call'],
                 'md':          mode,
+                'b':           spot.get('b', ''),
                 'freq_offset': spot.get('freq_offset', 0),
                 'unix_time':   spot.get('unix_time', 0.0),
                 'rp':          spot.get('rp', '0'),
