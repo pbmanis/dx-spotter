@@ -81,6 +81,16 @@ class AppConfig:
         same callsign from WSJT-X.  A callsign heard again within this window
         is silently dropped from the spot table (though its decode is still
         cached for Reply).  Default is ``300`` (5 minutes).
+    commander_enabled : bool
+        Whether to use DX Lab Commander for rig control when a CW or SSB spot
+        is double-clicked.  Set to ``True`` in ``config.toml`` to enable.
+    commander_host : str
+        Hostname or IP address of the Commander process.  Almost always
+        ``'127.0.0.1'`` (same machine).
+    commander_port : int
+        TCP port Commander listens on.  Commander's documented default is
+        ``52002`` (configured port block base + 2).  Some installations use a
+        different port; check Commander's configuration.
     """
 
     udp_address: str = '224.0.0.1'
@@ -101,6 +111,11 @@ class AppConfig:
         default_factory=lambda: ["FM", "FN", "FL", "EL", "EN", "EM"]
     )
     wsjt_reshow_secs: int = 300
+    commander_enabled: bool = False
+    commander_host: str = '127.0.0.1'
+    commander_port: int = 52002
+    commander_timeout: float = 0.2
+    commander_verify_delay: float = 0.75
 
 
 def config_path() -> Path:
@@ -174,6 +189,13 @@ def load_config() -> AppConfig:
     cfg.criterion = str(ui.get('criterion', cfg.criterion))
     cfg.display_filter = str(ui.get('display_filter', cfg.display_filter))
 
+    rig = data.get('rig', {})
+    cfg.commander_enabled = bool(rig.get('commander_enabled', cfg.commander_enabled))
+    cfg.commander_host = str(rig.get('commander_host', cfg.commander_host))
+    cfg.commander_port = int(rig.get('commander_port', cfg.commander_port))
+    cfg.commander_timeout = float(rig.get('commander_timeout', cfg.commander_timeout))
+    cfg.commander_verify_delay = float(rig.get('commander_verify_delay', cfg.commander_verify_delay))
+
     return cfg
 
 
@@ -217,5 +239,12 @@ wsjt_reshow_secs   = {cfg.wsjt_reshow_secs}
 [ui]
 criterion      = "{cfg.criterion}"
 display_filter = "{cfg.display_filter}"
+
+[rig]
+commander_enabled      = {"true" if cfg.commander_enabled else "false"}
+commander_host         = "{cfg.commander_host}"
+commander_port         = {cfg.commander_port}
+commander_timeout      = {cfg.commander_timeout}
+commander_verify_delay = {cfg.commander_verify_delay}
 """
     path.write_text(content, encoding='utf-8')

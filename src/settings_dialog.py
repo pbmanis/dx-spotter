@@ -12,8 +12,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
-    QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
-    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
+    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QRadioButton, QSpinBox, QVBoxLayout, QButtonGroup,
 )
 
@@ -42,6 +42,10 @@ class SettingsDialog(QDialog):
                  my_grid: str = 'FM05kw',
                  rx_grid_prefixes: list[str] | None = None,
                  wsjt_reshow_secs: int = 300,
+                 commander_enabled: bool = False,
+                 commander_port: int = 52002,
+                 commander_timeout: float = 0.2,
+                 commander_verify_delay: float = 0.75,
                  parent=None) -> None:
         """Build and populate the settings dialog.
 
@@ -64,6 +68,15 @@ class SettingsDialog(QDialog):
         wsjt_reshow_secs : int, optional
             Minimum seconds between successive table entries for the same WSJT-X
             callsign.  Default is ``300``.
+        commander_enabled : bool, optional
+            Whether Commander rig control is active.  Default ``False``.
+        commander_port : int, optional
+            TCP port Commander listens on.  Default ``52002``.
+        commander_timeout : float, optional
+            Per-query TCP receive timeout in seconds.  Default ``0.2``.
+        commander_verify_delay : float, optional
+            Seconds to wait after a set command before reading back rig state.
+            Default ``0.75``.
         parent : QWidget or None, optional
             Optional Qt parent widget.
         """
@@ -162,6 +175,44 @@ class SettingsDialog(QDialog):
         udp_note.setWordWrap(True)
         udp_note.setStyleSheet("color: #999999; font-size: 10pt;")
 
+        # ── Commander / rig control ───────────────────────────────────────────
+        cmd_box = QGroupBox("Commander / Rig Control  (DX Lab Suite)")
+        cmd_form = QFormLayout(cmd_box)
+
+        self._cmd_enabled = QCheckBox("Enable Commander for CW / SSB spots")
+        self._cmd_enabled.setChecked(commander_enabled)
+
+        self._cmd_port_spin = QSpinBox()
+        self._cmd_port_spin.setRange(1024, 65535)
+        self._cmd_port_spin.setValue(commander_port)
+
+        self._cmd_timeout_spin = QDoubleSpinBox()
+        self._cmd_timeout_spin.setRange(0.05, 5.0)
+        self._cmd_timeout_spin.setSingleStep(0.05)
+        self._cmd_timeout_spin.setDecimals(2)
+        self._cmd_timeout_spin.setSuffix(" s")
+        self._cmd_timeout_spin.setValue(commander_timeout)
+
+        self._cmd_delay_spin = QDoubleSpinBox()
+        self._cmd_delay_spin.setRange(0.1, 10.0)
+        self._cmd_delay_spin.setSingleStep(0.05)
+        self._cmd_delay_spin.setDecimals(2)
+        self._cmd_delay_spin.setSuffix(" s")
+        self._cmd_delay_spin.setValue(commander_verify_delay)
+
+        cmd_form.addRow("", self._cmd_enabled)
+        cmd_form.addRow("TCP Port:", self._cmd_port_spin)
+        cmd_form.addRow("Query timeout:", self._cmd_timeout_spin)
+        cmd_form.addRow("Verify delay:", self._cmd_delay_spin)
+
+        cmd_note = QLabel(
+            "Port is the third port in Commander's configured port block "
+            "(documented default 52002).  Verify delay must cover at least "
+            "one Commander rig-poll cycle (~0.7 s minimum)."
+        )
+        cmd_note.setWordWrap(True)
+        cmd_note.setStyleSheet("color: #999999; font-size: 10pt;")
+
         # ── buttons ───────────────────────────────────────────────────────────
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -173,6 +224,8 @@ class SettingsDialog(QDialog):
         layout.addWidget(station_box)
         layout.addWidget(udp_box)
         layout.addWidget(udp_note)
+        layout.addWidget(cmd_box)
+        layout.addWidget(cmd_note)
         layout.addStretch()
         layout.addWidget(buttons)
 
@@ -230,3 +283,23 @@ class SettingsDialog(QDialog):
     def wsjt_reshow_secs(self) -> int:
         """Minimum seconds between successive WSJT-X table entries for the same call."""
         return self._reshow_spin.value()
+
+    @property
+    def commander_enabled(self) -> bool:
+        """Whether Commander rig control is enabled."""
+        return self._cmd_enabled.isChecked()
+
+    @property
+    def commander_port(self) -> int:
+        """TCP port Commander listens on."""
+        return self._cmd_port_spin.value()
+
+    @property
+    def commander_timeout(self) -> float:
+        """Per-query TCP receive timeout in seconds."""
+        return self._cmd_timeout_spin.value()
+
+    @property
+    def commander_verify_delay(self) -> float:
+        """Seconds to wait after a set command before reading back rig state."""
+        return self._cmd_delay_spin.value()

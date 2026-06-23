@@ -8,6 +8,7 @@ import argparse
 import json
 import signal
 import sys
+import threading
 import time
 
 import paho.mqtt.client as mqtt
@@ -16,10 +17,11 @@ from pyhamtools import LookupLib, Callinfo
 from pyhamtools.locator import calculate_distance as qth_distance
 
 from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from adif_log import ADIFLog
 from appconfig import AppConfig, config_path, load_config, save_config
+from commander_client import CommanderClient, is_available as commander_available
 from main_window import MainWindow, make_app_icon
 from settings_dialog import SettingsDialog
 from wsjtx_listener import WsjtxListener
@@ -230,7 +232,6 @@ class DXSpotter:
         self.args.band = settings['band']
         self.args.mode = settings['mode']
         self.args.range = settings['range']
-        self.args.terminal = settings['terminal']
 
         # Apply max spot age to table immediately
         if self.window is not None:
@@ -561,63 +562,97 @@ class DXSpotter:
     _WSJT_DIGITAL = frozenset({'FT8', 'FT4', 'FT2'})
 
     def _on_spot_activated(self, spot_data: dict) -> None:
-        """Called when the user double-clicks a spot row."""
+        # Route a double-clicked spot to the appropriate radio-control path.
+        # Mode drives routing; source tag (psk / wsjt / telnet / …) does not.
         mode = spot_data.get('md', '').upper()
         if mode in self._WSJT_DIGITAL:
-            if self.wsjt_listener is None:
-                print("Double-click: WSJT-X listener not active")
-                return
-            call   = spot_data.get('call', '')
-            source = spot_data.get('source', 'psk')
-
-            # Prefer the freshest WSJT-X decode — updated every 15 s regardless
-            # of the 5-minute display gate, so Reply always has exact fields.
-            latest = self.wsjt_listener.get_latest_decode(call)
-            low_confidence = False
-            if latest:
-                time_ms = latest['ms']
-                snr = latest['snr']
-                df = latest['df']
-                delta_t = latest['delta_t']
-                mode = latest['mode']
-                msg = latest['msg']
-                low_confidence = latest.get('low_confidence', False)
-                print(f"Double-click: {call} ({source}) — fresh decode "
-                      f"ms={time_ms} df={df} dt={delta_t:.2f}s "
-                      f"snr={snr:+d} lc={low_confidence} msg={msg!r}")
-            else:
-                unix_time = spot_data.get('unix_time', 0.0)
-                time_ms   = int(round((unix_time % 86400) * 1000))
-                try:
-                    snr = int(str(spot_data.get('rp', '0')).lstrip('+'))
-                except ValueError:
-                    snr = 0
-                df      = spot_data.get('freq_offset', 0)
-                delta_t = spot_data.get('delta_t', 0.0)
-                msg     = spot_data.get('msg', '')
-                if not msg:
-                    loc = spot_data.get('loc', '')
-                    msg = f"CQ {call} {loc[:4]}".strip() if call else ''
-                print(f"Double-click: {call} ({source}) — no cached WSJT-X decode, "
-                      f"using spot-row values (PSK Reporter spot or stale)")
-
-            loc = spot_data.get('loc', '')
-
-            self.wsjt_listener.highlight_call(call, bg=(255, 200, 0), fg=(0, 0, 0))
-            # Configure sets DX call, Rx DF, and generates standard messages
-            # without needing a band-activity match (unlike Reply).
-            self.wsjt_listener.configure(
-                rx_df=df, dx_call=call, dx_grid=loc,
-                generate_messages=True,
-            )
-            # Reply additionally selects the matching row in band activity
-            # (visual feedback); keep it in case it works on this WSJT-X build.
-            self.wsjt_listener.reply_to_decode(
-                time_ms=time_ms, snr=snr, df=df, mode=mode,
-                message=msg, delta_t=delta_t, low_confidence=low_confidence,
-            )
+            self._activate_digital_spot(spot_data)
         else:
-            self._on_spot_activated_other(spot_data)
+            self._activate_rig_spot(spot_data)
+
+    def _activate_digital_spot(self, spot_data: dict) -> None:
+        # Route a digital spot to WSJT-X.  For non-wsjt sources, check whether
+        # the station is currently visible in WSJT-X and prompt if not.
+        if self.wsjt_listener is None:
+            print("Double-click: WSJT-X listener not active")
+            return
+        call = spot_data.get('call', '')
+        if spot_data.get('source') != 'wsjt':
+            if self.wsjt_listener.get_latest_decode(call) is None:
+                self._prompt_wsjt_not_visible(spot_data)
+                return
+        self._send_to_wsjt(spot_data)
+
+    def _send_to_wsjt(self, spot_data: dict) -> None:
+        # Send a spot to WSJT-X via Configure + Reply.
+        # Prefers a fresh WSJT-X decode; falls back to stored spot-row values.
+        if self.wsjt_listener is None:
+            return
+        call   = spot_data.get('call', '')
+        source = spot_data.get('source', 'psk')
+
+        # Prefer the freshest WSJT-X decode — updated every 15 s regardless
+        # of the 5-minute display gate, so Reply always has exact fields.
+        latest = self.wsjt_listener.get_latest_decode(call)
+        low_confidence = False
+        if latest:
+            time_ms = latest['ms']
+            snr     = latest['snr']
+            df      = latest['df']
+            delta_t = latest['delta_t']
+            mode    = latest['mode']
+            msg     = latest['msg']
+            low_confidence = latest.get('low_confidence', False)
+            print(f"Double-click: {call} ({source}) — fresh decode "
+                  f"ms={time_ms} df={df} dt={delta_t:.2f}s "
+                  f"snr={snr:+d} lc={low_confidence} msg={msg!r}")
+        else:
+            unix_time = spot_data.get('unix_time', 0.0)
+            time_ms   = int(round((unix_time % 86400) * 1000))
+            try:
+                snr = int(str(spot_data.get('rp', '0')).lstrip('+'))
+            except ValueError:
+                snr = 0
+            df      = spot_data.get('freq_offset', 0)
+            delta_t = spot_data.get('delta_t', 0.0)
+            mode    = spot_data.get('md', 'FT8').upper()
+            msg     = spot_data.get('msg', '')
+            if not msg:
+                loc = spot_data.get('loc', '')
+                msg = f"CQ {call} {loc[:4]}".strip() if call else ''
+            print(f"Double-click: {call} ({source}) — no cached WSJT-X decode, "
+                  f"using spot-row values")
+
+        loc = spot_data.get('loc', '')
+        self.wsjt_listener.highlight_call(call, bg=(255, 200, 0), fg=(0, 0, 0))
+        # Configure sets DX call, Rx DF, and generates standard messages
+        # without needing a band-activity match (unlike Reply).
+        self.wsjt_listener.configure(
+            rx_df=df, dx_call=call, dx_grid=loc,
+            generate_messages=True,
+        )
+        # Reply additionally selects the matching row in band activity
+        # (visual feedback); keep it in case it works on this WSJT-X build.
+        self.wsjt_listener.reply_to_decode(
+            time_ms=time_ms, snr=snr, df=df, mode=mode,
+            message=msg, delta_t=delta_t, low_confidence=low_confidence,
+        )
+
+    def _prompt_wsjt_not_visible(self, spot_data: dict) -> None:
+        # Ask the user whether to send a spot that isn't in the WSJT-X decoded list.
+        call = spot_data.get('call', '')
+        box = QMessageBox(self.window)
+        box.setWindowTitle("Spot not visible in WSJT-X")
+        box.setText(f"<b>{call}</b> is not currently visible in WSJT-X.")
+        box.setInformativeText(
+            "The station may not be audible on this band.  "
+            "Send the spot to WSJT-X anyway?"
+        )
+        send_btn = box.addButton("Send to WSJT-X", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is send_btn:
+            self._send_to_wsjt(spot_data)
 
     def _on_spots_expired(self, psk_removed: int, wsjt_removed: int) -> None:
         self.psk_counter  = max(0, self.psk_counter  - psk_removed)
@@ -659,9 +694,55 @@ class DXSpotter:
         if self.window is not None:
             self.window.call_active.emit(call)
 
-    def _on_spot_activated_other(self, _spot_data: dict) -> None:
-        """Hook for future non-WSJT-X rig control (e.g. Elecraft K3)."""
-        pass
+    def _activate_rig_spot(self, spot_data: dict) -> None:
+        # QSY the rig to a CW/SSB spot via DX Lab Commander.
+        # Runs in a daemon thread so the post-set verify delay (~0.75 s) does
+        # not block the Qt main thread.
+        # For PSK/telnet CW and SSB spots, freq_offset is the absolute
+        # frequency in Hz (self.freqs has no entry for these modes, so
+        # get_freq_offset returns payload['f'] - 0 = payload['f']).
+        if not self._config.commander_enabled:
+            print(f"Double-click: Commander not enabled for "
+                  f"{spot_data.get('call')} ({spot_data.get('md')})")
+            return
+        psk_mode = spot_data.get('md', '').upper()
+        freq_khz = spot_data.get('freq_offset', 0) / 1000.0
+        cmd_mode = self._psk_mode_to_commander(psk_mode, freq_khz)
+        if cmd_mode is None:
+            print(f"Double-click: no Commander mode mapping for {psk_mode!r}")
+            return
+        host = self._config.commander_host
+        port = self._config.commander_port
+        timeout = self._config.commander_timeout
+        verify_delay = self._config.commander_verify_delay
+        call = spot_data.get('call', '')
+
+        def _run() -> None:
+            if not commander_available(host, port):
+                print(f"Commander not reachable at {host}:{port}")
+                return
+            client = CommanderClient(host=host, port=port, timeout=timeout)
+            result = client.set_freq_and_mode(freq_khz, cmd_mode,
+                                              verify_delay=verify_delay)
+            if result.success:
+                print(f"Commander QSY: {call} → {freq_khz:.3f} kHz {cmd_mode}")
+            else:
+                print(f"Commander QSY failed for {call}: {result.errors}")
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    @staticmethod
+    def _psk_mode_to_commander(psk_mode: str, freq_khz: float) -> str | None:
+        # Map a spot-table mode string to a Commander mode string.
+        # SSB is split into LSB (below 10 MHz / 40 m and lower) and USB above.
+        # Digital modes return None — they are handled via WSJT-X, not Commander.
+        if psk_mode == 'CW':
+            return 'CW'
+        if psk_mode == 'SSB':
+            return 'LSB' if freq_khz < 10_000.0 else 'USB'
+        if psk_mode in ('AM', 'FM', 'LSB', 'USB'):
+            return psk_mode
+        return None
 
     def _on_criterion_changed(self, criterion: str) -> None:
         # Slot connected to MainWindow.criterion_changed.
@@ -836,9 +917,10 @@ class DXSpotter:
         if log is None:
             return "No log loaded"
         if cfg.log_source == 'rumlogng':
-            source = "RumLogNG"
+            source = "RUMlogNG"
         else:
-            source = cfg.adif_path or "ADIF"
+            from pathlib import Path
+            source = Path(cfg.adif_path).name if cfg.adif_path else "ADIF"
         total    = log.confirmed_dxcc_count
         lotw     = log.confirmed_lotw_dxcc_count
         paper    = log.confirmed_paper_only_dxcc_count
@@ -876,6 +958,10 @@ class DXSpotter:
             my_grid=self.my_grid,
             rx_grid_prefixes=cfg.rx_grid_prefixes,
             wsjt_reshow_secs=cfg.wsjt_reshow_secs,
+            commander_enabled=cfg.commander_enabled,
+            commander_port=cfg.commander_port,
+            commander_timeout=cfg.commander_timeout,
+            commander_verify_delay=cfg.commander_verify_delay,
             parent=self.window,
         )
         if dlg.exec() != SettingsDialog.DialogCode.Accepted:
@@ -887,6 +973,10 @@ class DXSpotter:
         cfg.my_grid = dlg.my_grid
         cfg.rx_grid_prefixes = dlg.rx_grid_prefixes
         cfg.wsjt_reshow_secs = dlg.wsjt_reshow_secs
+        cfg.commander_enabled = dlg.commander_enabled
+        cfg.commander_port = dlg.commander_port
+        cfg.commander_timeout = dlg.commander_timeout
+        cfg.commander_verify_delay = dlg.commander_verify_delay
 
         new_source = dlg.log_source
         new_adif = dlg.adif_path
