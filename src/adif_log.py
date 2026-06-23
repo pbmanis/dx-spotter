@@ -24,7 +24,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-_5BD_BANDS = frozenset({'80M', '40M', '20M', '15M', '10M'})
+_5BD_BANDS  = frozenset({'80M', '40M', '20M', '15M', '10M'})
+_WARC_BANDS = frozenset({'30M', '17M', '12M'})
 _DIGITAL_MODES = frozenset({
     'FT8', 'FT4', 'FT2', 'JS8', 'JT65', 'JT9', 'PSK31', 'PSK63',
     'RTTY', 'WSPR', 'MSK144', 'OLIVIA', 'CONTESTIA', 'MFSK',
@@ -392,6 +393,14 @@ class ADIFLog:
             if band_up in self._worked_bands.get(dxcc, set()):
                 return 'worked'
 
+        elif criterion == 'warc':
+            if band_up not in _WARC_BANDS:
+                return 'n/a'
+            if band_up in self._confirmed_bands.get(dxcc, set()):
+                return 'confirmed'
+            if band_up in self._worked_bands.get(dxcc, set()):
+                return 'worked'
+
         elif criterion == '6m':
             if band_up != '6M':
                 return 'n/a'
@@ -482,6 +491,8 @@ class ADIFLog:
     def _matches_criterion(band: str, mode: str, monitored_band: str, criterion: str) -> bool:
         if criterion == '5bd':
             return band == monitored_band and band in _5BD_BANDS
+        if criterion == 'warc':
+            return band == monitored_band and band in _WARC_BANDS
         if criterion == '6m':
             return band == '6M'
         if criterion == 'cw':

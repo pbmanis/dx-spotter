@@ -35,6 +35,7 @@ _WSJT_FILTERS = ['CQ', 'all']
 # Award criteria: internal key → display label (controls QSL column coloring only)
 _CRITERIA: list[tuple[str, str]] = [
     ('5bd',     '5 Band DXCC  (80/40/20/15/10m)'),
+    ('warc',    'DXCC WARC  (30/17/12m)'),
     ('cw',      'DXCC CW'),
     ('mixed',   'DXCC Mixed'),
     ('digital', 'DXCC Digital'),
@@ -265,9 +266,6 @@ class MainWindow(QMainWindow):
                      fileMode='ExistingFile',
                      nameFilter='ADIF Files (*.adif *.adi);;All Files (*)'),
             ]),
-            dict(name='Display', type='group', children=[
-                dict(name='Terminal Output', type='bool', value=args.terminal),
-            ]),
         ])
 
     def _collect_settings(self) -> dict:
@@ -283,7 +281,6 @@ class MainWindow(QMainWindow):
             'range':        range_km if range_km > 0 else None,
             'wsjt_filter':  df.child('Decode Filter').value(),
             'max_spot_age': df.child('Max Spot Age (min)').value(),
-            'terminal':     p.child('Display').child('Terminal Output').value(),
             'adif_path':    p.child('ADIF Log').child('File').value().strip(),
         }
 
