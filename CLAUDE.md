@@ -2,18 +2,22 @@
 
 ## Project overview
 
-Ham radio spot aggregator for DX hunting. Subscribes to PSK Reporter via MQTT and listens to WSJT-X UDP decodes, displays spots in a PyQt6 table coloured by DXCC award status, and compares against an ADIF log or RumLogNG CloudKit database.
+Amateur radio spot aggregator for DX hunting. Subscribes to PSK Reporter via MQTT and listens to WSJT-X UDP decodes, displays spots in a PyQt6 table colored by DXCC award status, and compares against an ADIF log or RumLogNG CloudKit database.
 
 ##
+- always re-read this file before beginning work on a new request.
 - format code with black, and use pep-8 style when generating new code blocks. 
 - Never perform git actions.
 - Never delete a file; ask me to delete it manually.
-- Create docstrings using the numpy format, in prepratation for sphinx to generate the documentation.
+- Create docstrings using the numpy format, in preparation for Sphinx to generate the documentation.
+- remember what I have said/suggested/asked/specified. If new requests conflict with old requests, check with me to be sure of what I am trying to accomplish.
 - Only generate docstrings for "public" functions, not for "private" functions. A short description comment is sufficient for the private functions, unless they do something complex or unusual, in which case a longer description is needed.
 - Use clear variable and function names, consistent with the names already in the project.
 - Always type variables and return values. 
 - If the logic of a suggestion/request is not clear, or a conflicting set of states appears in the analysis, do not try to solve the problem, but instead ask for clarification using a succinct description of the issue. 
-
+- Use American spelling, not British spellings of words. If British spelling is encountered, replace with American spelling.
+- keep code clean and lean, consistent with the specified logic.
+   
 ## Running the app
 
 ```bash
@@ -35,7 +39,7 @@ python dxspotter.py -b 20m -m FT8 -t   # band, mode, terminal output
 |---|---|
 | `src/dxspotter.py` | Main controller: MQTT client, WSJT-X wiring, Qt app lifecycle |
 | `src/main_window.py` | `MainWindow` — ParameterTree settings dock + spot table dock + status bar |
-| `src/spot_window.py` | `SpotTable` — QTableWidget with award colouring, age expiry, context menu |
+| `src/spot_window.py` | `SpotTable` — QTableWidget with award coloring, age expiry, context menu |
 | `src/adif_log.py` | `ADIFLog` — parses ADIF files or RumLogNG SQLite (read-only) |
 | `src/wsjtx_listener.py` | `WsjtxListener` — UDP thread, WSJT-X protocol encode/decode |
 | `src/settings_dialog.py` | Settings dialog (log source, station grid, WSJT-X network) |
