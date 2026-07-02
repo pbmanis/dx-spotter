@@ -30,7 +30,7 @@ if $BUILD_PDF; then
     PDF_OUT="docs/_build/pdf"
 
     echo "Building LaTeX source..."
-    uv run sphinx-build -b latex "${SPHINX_EXTRA[@]}" docs "$LATEX_DIR"
+    uv run sphinx-build -b latex ${SPHINX_EXTRA[@]+"${SPHINX_EXTRA[@]}"} docs "$LATEX_DIR"
 
     echo "Compiling PDF with latexmk (xelatex)..."
     mkdir -p "$PDF_OUT"
@@ -49,7 +49,7 @@ if $BUILD_PDF; then
     fi
 else
     echo "Building DX Spotter HTML documentation..."
-    uv run sphinx-build -b html "${SPHINX_EXTRA[@]}" docs docs/_build/html
+    uv run sphinx-build -b html ${SPHINX_EXTRA[@]+"${SPHINX_EXTRA[@]}"} docs docs/_build/html
     echo ""
     echo "Done. Open docs/_build/html/index.html to view."
 fi
