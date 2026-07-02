@@ -1,8 +1,8 @@
 """DX Lab Suite Commander TCP/IP client.
 
 Queries Commander for transceiver state using the ADIF-style TCP/IP
-protocol documented at:
-  http://www.dxlabsuite.com/commander/Commander%20TCPIP%20Messages.pdf
+protocol documented at
+`Commander TCP/IP Messages <http://www.dxlabsuite.com/commander/Commander%20TCPIP%20Messages.pdf>`_.
 
 Commander listens on the third port of its configured port block.  The
 documented default is port 52002 (base 52000 + 2).  Adjust the

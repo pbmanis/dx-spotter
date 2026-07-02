@@ -156,8 +156,8 @@ class _BinReader:
         return v
 
 
-# Signature: (dx_call, dx_grid, snr, df_hz, mode, band, unix_time, msg, delta_t) -> None
-SpotCallback = Callable[[str, str, int, int, str, str, float, str, float], None]
+# Signature: (dx_call, dx_grid, snr, df_hz, mode, band, unix_time, msg, delta_t, abs_freq_hz) -> None
+SpotCallback = Callable[[str, str, int, int, str, str, float, str, float, int], None]
 # Signature: (call) -> None  — called when a CQ caller is observed entering a QSO
 BusyCallback = Callable[[str], None]
 # Signature: () -> None  — called on first packet and on each incoming Heartbeat (type 0)
@@ -196,7 +196,7 @@ class WsjtxListener:
                  on_heartbeat: 'HeartbeatCallback | None' = None,
                  mcast_addr: str = '224.0.0.1',
                  reshow_secs: int = 300) -> None:
-        """Initialise the listener; call :meth:`start` to begin receiving packets.
+        """Initialize the listener; call :meth:`start` to begin receiving packets.
 
         Parameters
         ----------
@@ -244,6 +244,7 @@ class WsjtxListener:
         self._wsjt_mode = ''
         self._de_grid = ''
         self._call_times: dict[str, float] = {}
+        self._last_decode_time: float = 0.0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._wsjt_host: str | None = None  # set from first received packet
@@ -270,6 +271,21 @@ class WsjtxListener:
         self._thread = threading.Thread(target=self._run, daemon=True, name="wsjt-udp")
         self._thread.start()
         print(f"WSJT-X listener started on UDP port {self.port}")
+
+    @property
+    def dial_freq(self) -> int:
+        """Most recently received dial frequency from WSJT-X Status (Hz), or 0."""
+        return self._dial_freq
+
+    @property
+    def last_decode_time(self) -> float:
+        """Unix timestamp of the most recent Decode packet from WSJT-X, or 0.0.
+
+        Updated on every Decode (type 2) message before any call / mode
+        filtering.  Used by the status bar to distinguish "connected but
+        silent" from "connected with active decodes".
+        """
+        return self._last_decode_time
 
     def stop(self) -> None:
         """Signal the listener thread to exit on its next iteration."""
@@ -516,12 +532,12 @@ class WsjtxListener:
         callsign : str
             Callsign to highlight in the WSJT-X band-activity window.
         bg : tuple[int, int, int] or None, optional
-            RGB background colour as ``(r, g, b)`` with values 0–255.
+            RGB background color as ``(r, g, b)`` with values 0–255.
             Default is amber ``(255, 200, 0)``.  ``None`` sends an invalid
-            (transparent / clear) colour.
+            (transparent / clear) color.
         fg : tuple[int, int, int] or None, optional
-            RGB foreground (text) colour as ``(r, g, b)``.  Default is
-            black ``(0, 0, 0)``.  ``None`` sends an invalid colour.
+            RGB foreground (text) color as ``(r, g, b)``.  Default is
+            black ``(0, 0, 0)``.  ``None`` sends an invalid color.
         last_only : bool, optional
             If ``True``, highlight only the last occurrence of the callsign
             in band activity (default ``False`` = highlight all occurrences).
@@ -645,6 +661,7 @@ class WsjtxListener:
                     print("WSJT-X Reply echo ← (parse error)")
 
             elif mtype == self._MSG_DECODE:
+                self._last_decode_time = time.time()  # stamp before any filtering
                 r.bool_()                   # new
                 ms       = r.uint32()       # ms since midnight UTC (exact integer)
                 snr      = r.int32()
@@ -695,7 +712,7 @@ class WsjtxListener:
                 band      = freq_to_band(freq_hz)
                 midnight  = now - (now % 86400)
                 unix_time = midnight + ms / 1000.0
-                self.on_spot(dx_call, dx_grid, snr, df, mode, band, unix_time, msg, delta_t)
+                self.on_spot(dx_call, dx_grid, snr, df, mode, band, unix_time, msg, delta_t, freq_hz)
 
             else:
                 # Log anything else WSJT-X sends so we can see all traffic

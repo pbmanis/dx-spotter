@@ -24,6 +24,7 @@ from version import __version__
 from pyqtgraph.dockarea import DockArea, Dock
 from pyqtgraph.parametertree import Parameter, ParameterTree
 
+from band_map import BandMap
 from spot_window import SpotTable, make_app_icon  # re-export make_app_icon
 
 
@@ -41,6 +42,7 @@ _CRITERIA: list[tuple[str, str]] = [
     ('digital', 'DXCC Digital'),
     ('ssb',     'DXCC SSB'),
     ('6m',      'DXCC 6M'),
+    ('was',     'WAS (current band)'),
 ]
 _DEFAULT_CRITERION = 'mixed'
 
@@ -61,7 +63,7 @@ class MainWindow(QMainWindow):
     Left dock (280 px wide)
         * :class:`~pyqtgraph.parametertree.ParameterTree` — band, mode, range,
           ADIF path, terminal-output toggle.
-        * Award Criteria radio group — selects which DXCC award colours the QSL
+        * Award Criteria radio group — selects which DXCC award colors the QSL
           column (emits :attr:`criterion_changed`).
         * Display Filter radio group — hides/shows rows by DXCC status.
         * Reports panel — live PSK Reporter / WSJT-X / total spot counts.
@@ -80,7 +82,7 @@ class MainWindow(QMainWindow):
         WSJT-X listener detected that this callsign entered a QSO; dims the
         corresponding rows in the spot table.
     call_active : pyqtSignal(str)
-        The previously busy callsign is calling CQ again; restores full colours.
+        The previously busy callsign is calling CQ again; restores full colors.
     restart_requested : pyqtSignal()
         Restart button clicked → :meth:`~DXSpotter._restart`.
     settings_changed : pyqtSignal(dict)
@@ -130,19 +132,27 @@ class MainWindow(QMainWindow):
 
         # ── Status bar ────────────────────────────────────────────────────────
         self._sb_log  = QLabel("No log loaded")
+        self._sb_t1   = QLabel("T1: off")
+        self._sb_t2   = QLabel("T2: off")
         self._sb_pskr = QLabel("PSKR: connecting…")
         self._sb_wsjt = QLabel("WSJT-X: —")
         self._sb_log.setStyleSheet("padding: 0 6px;")
+        self._sb_t1.setStyleSheet("padding: 0 6px; color: #888888;")
+        self._sb_t2.setStyleSheet("padding: 0 6px; color: #888888;")
         self._sb_pskr.setStyleSheet("padding: 0 6px; color: #888888;")
         self._sb_wsjt.setStyleSheet("padding: 0 6px;")
-        self.statusBar().addWidget(self._sb_log, 1)        # left, stretches
-        self.statusBar().addPermanentWidget(self._sb_pskr)  # centre-right
-        self.statusBar().addPermanentWidget(self._sb_wsjt)  # far right
+        self.statusBar().addWidget(self._sb_log, 1)         # left, stretches
+        self.statusBar().addPermanentWidget(self._sb_t1)    # right: T1
+        self.statusBar().addPermanentWidget(self._sb_t2)    # right: T2
+        self.statusBar().addPermanentWidget(self._sb_pskr)  # right: PSKR
+        self.statusBar().addPermanentWidget(self._sb_wsjt)  # right: WSJT-X
 
-        left_dock  = Dock("Settings", size=(280, 700))
-        right_dock = Dock("Spots",    size=(1120, 700))
-        area.addDock(left_dock,  'left')
-        area.addDock(right_dock, 'right', relativeTo=left_dock)
+        left_dock    = Dock("Settings", size=(280, 700))
+        right_dock   = Dock("Spots",    size=(1120, 525))
+        bandmap_dock = Dock("Band Map", size=(1120, 175))
+        area.addDock(left_dock,    'left')
+        area.addDock(right_dock,   'right',  relativeTo=left_dock)
+        area.addDock(bandmap_dock, 'bottom', relativeTo=right_dock)
 
         # ── Parameter tree ────────────────────────────────────────────────────
         self._params = self._build_params(initial_args, initial_adif_path)
@@ -159,6 +169,7 @@ class MainWindow(QMainWindow):
         crit_layout.setSpacing(2)
 
         self._crit_group = QButtonGroup(self)
+        self._was_rb: QRadioButton | None = None
         for key, label in _CRITERIA:
             rb = QRadioButton(label)
             if key == initial_criterion:
@@ -166,8 +177,11 @@ class MainWindow(QMainWindow):
             self._crit_group.addButton(rb)
             rb.setProperty('criterion', key)
             crit_layout.addWidget(rb)
+            if key == 'was':
+                self._was_rb = rb
 
         self._crit_group.buttonClicked.connect(self._on_criterion_clicked)
+        self._update_was_label()
 
         # ── Display filter radio buttons ──────────────────────────────────────
         display_filter_box = QGroupBox("Display Filter")
@@ -191,12 +205,16 @@ class MainWindow(QMainWindow):
         rpt_layout = QFormLayout(reports_box)
         rpt_layout.setContentsMargins(4, 4, 4, 4)
         rpt_layout.setSpacing(2)
-        self._lbl_psk   = QLabel("0")
-        self._lbl_wsjt  = QLabel("0")
-        self._lbl_total = QLabel("0")
+        self._lbl_psk     = QLabel("0")
+        self._lbl_wsjt    = QLabel("0")
+        self._lbl_telnet1 = QLabel("0")
+        self._lbl_telnet2 = QLabel("0")
+        self._lbl_total   = QLabel("0")
         rpt_layout.addRow("PSK Reporter:", self._lbl_psk)
         rpt_layout.addRow("WSJT-X:",       self._lbl_wsjt)
-        rpt_layout.addRow("Total:",         self._lbl_total)
+        rpt_layout.addRow("Telnet 1:",     self._lbl_telnet1)
+        rpt_layout.addRow("Telnet 2:",     self._lbl_telnet2)
+        rpt_layout.addRow("Total:",        self._lbl_total)
 
         # ── Restart / Settings / Quit buttons ────────────────────────────────
         btn_restart  = QPushButton("Restart")
@@ -231,6 +249,15 @@ class MainWindow(QMainWindow):
         self._spot_table.spot_activated.connect(self.spot_activated)
         if initial_display_filter != 'all':
             self._spot_table.set_display_filter(initial_display_filter)
+
+        # ── Band map ──────────────────────────────────────────────────────────
+        self._band_map = BandMap()
+        bandmap_dock.addWidget(self._band_map)
+        self.new_spot.connect(self._band_map.add_spot)
+        self._band_map.spot_activated.connect(self.spot_activated)
+        self._band_map.set_band(initial_args.band)
+        if initial_display_filter != 'all':
+            self._band_map.set_display_filter(initial_display_filter)
 
     # -- parameter tree -------------------------------------------------------
 
@@ -287,8 +314,16 @@ class MainWindow(QMainWindow):
     def _on_params_changed(self, _root, changes) -> None:
         for _param, change, _data in changes:
             if change == 'value':
+                self._update_was_label()
                 self.settings_changed.emit(self._collect_settings())
                 return
+
+    def _update_was_label(self) -> None:
+        if self._was_rb is None:
+            return
+        band = self._params.child('Data Filters').child('Band').value()
+        label = f"WAS (all bands)" if band == 'All' else f"WAS ({band})"
+        self._was_rb.setText(label)
 
     def _on_criterion_clicked(self, button: QRadioButton) -> None:
         key = button.property('criterion')
@@ -299,29 +334,44 @@ class MainWindow(QMainWindow):
         key = button.property('display_filter')
         if key:
             self._spot_table.set_display_filter(key)
+            self._band_map.set_display_filter(key)
 
     # -- public interface -----------------------------------------------------
 
-    def update_counts(self, psk_count: int, wsjt_count: int) -> None:
+    def update_counts(
+        self,
+        psk_count: int,
+        wsjt_count: int,
+        telnet1_count: int = 0,
+        telnet2_count: int = 0,
+    ) -> None:
         """Refresh the Reports panel spot counters.
 
         Parameters
         ----------
         psk_count : int
-            Number of PSK Reporter spots received this session.
+            Number of PSK Reporter spots currently in the table.
         wsjt_count : int
-            Number of WSJT-X spots received this session.
+            Number of WSJT-X spots currently in the table.
+        telnet1_count : int, optional
+            Number of DX Cluster 1 spots currently in the table.
+        telnet2_count : int, optional
+            Number of DX Cluster 2 spots currently in the table.
         """
         self._lbl_psk.setText(str(psk_count))
         self._lbl_wsjt.setText(str(wsjt_count))
-        self._lbl_total.setText(str(psk_count + wsjt_count))
+        self._lbl_telnet1.setText(str(telnet1_count))
+        self._lbl_telnet2.setText(str(telnet2_count))
+        total = psk_count + wsjt_count + telnet1_count + telnet2_count
+        self._lbl_total.setText(str(total))
 
     def clear_table(self) -> None:
-        """Clear all rows from the spot table and reset pending-spot state."""
+        """Clear all rows from the spot table and all spots from the bandmap."""
         self._spot_table.clear()
+        self._band_map.clear()
 
     def restyle_spots(self, adif_log, criterion: str) -> None:
-        """Push a new ADIF log and award criterion into the spot table and restyle all rows.
+        """Push a new ADIF log and award criterion into the spot table and bandmap and restyle.
 
         Parameters
         ----------
@@ -332,6 +382,22 @@ class MainWindow(QMainWindow):
         """
         self._spot_table.set_adif_log(adif_log)
         self._spot_table.set_criterion(criterion)
+        self._band_map.set_adif_log(adif_log)
+        self._band_map.set_criterion(criterion)
+
+    def set_bandmap_band(self, band: str | None) -> None:
+        """Update the band the bandmap displays.
+
+        Called from the 250 ms tick in :class:`~dxspotter.DXSpotter` with
+        the effective band derived from the user filter, Commander VFO, or
+        WSJT-X dial frequency.
+
+        Parameters
+        ----------
+        band : str or None
+            Band string (e.g. ``'20m'``), or ``None`` to clear the bandmap.
+        """
+        self._band_map.set_band(band)
 
     def get_criterion(self) -> str:
         """Return the currently selected award criterion key.
@@ -362,14 +428,15 @@ class MainWindow(QMainWindow):
         return _DEFAULT_DISPLAY_FILTER
 
     def set_max_spot_age(self, minutes: int) -> None:
-        """Forward the max-spot-age setting to the spot table.
+        """Forward the max-spot-age setting to the spot table and bandmap.
 
         Parameters
         ----------
         minutes : int
-            Remove rows older than this many minutes.  ``0`` disables expiry.
+            Remove spots older than this many minutes.  ``0`` disables expiry.
         """
         self._spot_table.set_max_age(minutes)
+        self._band_map.set_max_age(minutes)
 
     def set_adif_path(self, path: str) -> None:
         """Sync the ADIF File field in the parameter tree (called after Settings dialog).
@@ -405,31 +472,58 @@ class MainWindow(QMainWindow):
             ``None``  → grey text (unknown / not yet connected).
         """
         if ok is True:
-            colour = "#55cc55"
+            color = "#55cc55"
         elif ok is False:
-            colour = "#cc8800"
+            color = "#cc8800"
         else:
-            colour = "#888888"
-        self._sb_pskr.setStyleSheet(f"padding: 0 6px; color: {colour};")
+            color = "#888888"
+        self._sb_pskr.setStyleSheet(f"padding: 0 6px; color: {color};")
         self._sb_pskr.setText(text)
 
-    def set_wsjt_status(self, text: str, ok: bool | None = None) -> None:
+    def set_wsjt_status(self, text: str, ok: bool | str | None = None) -> None:
         """Update the WSJT-X connection status indicator in the status bar.
 
         Parameters
         ----------
         text : str
             Status text to display (e.g. ``'WSJT-X: connected'``).
-        ok : bool or None, optional
-            ``True``  → green text  (heartbeat received within 45 s).
-            ``False`` → orange text (no heartbeat for > 45 s).
-            ``None``  → grey text   (disabled or waiting for first packet).
+        ok : bool or str or None, optional
+            ``True``    → green text  (connected, decodes arriving).
+            ``'warn'``  → yellow text (connected but no recent decodes).
+            ``False``   → red text    (no heartbeat for > 45 s).
+            ``None``    → grey text   (disabled or waiting for first packet).
         """
         if ok is True:
-            colour = "#55cc55"
+            color = "#55cc55"
+        elif ok == 'warn':
+            color = "#cccc44"
         elif ok is False:
-            colour = "#cc8800"
+            color = "#cc4444"
         else:
-            colour = "#888888"
-        self._sb_wsjt.setStyleSheet(f"padding: 0 6px; color: {colour};")
+            color = "#888888"
+        self._sb_wsjt.setStyleSheet(f"padding: 0 6px; color: {color};")
         self._sb_wsjt.setText(text)
+
+    def set_telnet_status(self, index: int, text: str, ok: bool | None = None) -> None:
+        """Update a DX cluster telnet connection status indicator in the status bar.
+
+        Parameters
+        ----------
+        index : int
+            Cluster index: ``1`` for T1, ``2`` for T2.
+        text : str
+            Status text to display (e.g. ``'T1: connected'``).
+        ok : bool or None, optional
+            ``True``  → green text (TCP session established).
+            ``False`` → orange text (connecting / reconnecting).
+            ``None``  → grey text (disabled).
+        """
+        if ok is True:
+            color = "#55cc55"
+        elif ok is False:
+            color = "#cc8800"
+        else:
+            color = "#888888"
+        label = self._sb_t1 if index == 1 else self._sb_t2
+        label.setStyleSheet(f"padding: 0 6px; color: {color};")
+        label.setText(text)

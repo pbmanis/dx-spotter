@@ -114,7 +114,7 @@ def parse_adif(text: str) -> tuple[str, list[list[tuple[str, str]]]]:
 
 
 def format_record(record: list[tuple[str, str]]) -> str:
-    """Serialise one ADIF record to a text line ending with ``<EOR>``.
+    """Serialize one ADIF record to a text line ending with ``<EOR>``.
 
     Parameters
     ----------
@@ -138,7 +138,7 @@ def write_adif(header: str, records: list[list[tuple[str, str]]], path: Path) ->
     header : str
         Header text including ``<EOH>``.  Written verbatim when non-empty.
     records : list[list[tuple[str, str]]]
-        Records to serialise.
+        Records to serialize.
     path : Path
         Destination file path (created or overwritten).
     """
@@ -240,7 +240,7 @@ def _all_fields_key(record: list[tuple[str, str]]) -> frozenset[tuple[str, str]]
 
 
 def _differing_fields(group: list[list[tuple[str, str]]]) -> set[str]:
-    # Field names (excluding identity fields) whose normalised value varies across the group.
+    # Field names (excluding identity fields) whose normalized value varies across the group.
     # Power fields use alias-aware normalisation so "100" and "Mid Power" are equal.
     ndicts = [{n.upper(): v.strip() for n, v in rec} for rec in group]
     identity_set = set(_IDENTITY_FIELDS)
@@ -284,7 +284,7 @@ def _merge_fields(
             continue
         present = [d[name] for d in ndicts if d.get(name)]
         if name in _POWER_FIELDS:
-            # Normalise aliases to canonical numeric form before comparing.
+            # Normalize aliases to canonical numeric form before comparing.
             norm = list(dict.fromkeys(_normalize_power(v) for v in present))
             if not norm:
                 pass
@@ -397,7 +397,7 @@ def _resolve_conflict(
         elif field == "QSL_SENT":
             upper_opts = [v.upper() for v in options]
             if "Y" in upper_opts or "R" in upper_opts:
-                chosen = "Y"  # "R" (received) implies sent; normalise to "Y"
+                chosen = "Y"  # "R" (received) implies sent; normalize to "Y"
         elif field == "FREQ":
             chosen = _choose_freq(options)  # None when multiple distinct exact freqs
 
@@ -430,7 +430,7 @@ def _print_conflict(
     date = d0.get("QSO_DATE", "?")
     time_on = d0.get("TIME_ON", "?")
 
-    # Normalised field dicts (upper-cased names, stripped values) — needed for display.
+    # Normalized field dicts (upper-cased names, stripped values) — needed for display.
     ndicts: list[dict[str, str]] = [
         {n.upper(): v.strip() for n, v in rec}
         for rec in group
@@ -599,7 +599,7 @@ def deduplicate(
                     for f in differing
                 )
                 if not silent_conflict:
-                    # _merge_fields fills absent silent fields and normalises
+                    # _merge_fields fills absent silent fields and normalizes
                     # power aliases to their canonical numeric form.
                     merged_silent, _ = _merge_fields(group)
                     unique.append(merged_silent)

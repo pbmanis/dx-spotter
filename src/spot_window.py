@@ -2,7 +2,7 @@
 
 The central UI component is :class:`SpotTable`, a ``QWidget`` wrapping a
 ``QTableWidget`` that displays incoming DX spots from PSK Reporter and WSJT-X,
-colours rows by DXCC award status, and provides right-click QSO-detail context
+colors rows by DXCC award status, and provides right-click QSO-detail context
 menus.
 
 Module-level constants
@@ -12,7 +12,7 @@ COLUMNS : list[str]
 AGE_COL, QSL_COL, CALL_COL : int
     Pre-computed column indices for the Age, QSL, and DX Call columns.
 AWARD_COLORS : dict[str, tuple[str, str]]
-    Maps award status → ``(background_hex, foreground_hex)`` colour pairs.
+    Maps award status → ``(background_hex, foreground_hex)`` color pairs.
 _US_CANADA_DXCC : frozenset[int]
     ADIF DXCC entity numbers for mainland US (291) and Canada (1), excluded
     by the ``'dxcc_only'`` display filter.
@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QMenu, QTableWidget, QTableWidgetItem, QAbstractItemView,
 )
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFontDatabase, QIcon
+from PyQt6.QtGui import QColor, QFontDatabase, QIcon, QPixmap
 
 if TYPE_CHECKING:
     from adif_log import ADIFLog
@@ -48,7 +48,7 @@ CALL_COL = COLUMNS.index("DX Call")
 # the dxcc/band/mode dict stored in UserRole on the same cell).
 _SPOT_ROLE = Qt.ItemDataRole.UserRole + 1
 
-# 3-state award colour scheme
+# 3-state award color scheme
 # confirmed = grey (already in the log for this award)
 # worked    = orange (QSO in log, need confirmation)
 # new       = red (never worked, needed for award)
@@ -58,6 +58,7 @@ AWARD_COLORS: dict[str, tuple[str, str]] = {
     'new':       ("#8b0000", "#ffffff"),
     'n/a':       ("#505050", "#808080"),  # same bg as confirmed, dimmer text
     'over100':   ("#004040", "#00e0e0"),  # 5BD-only: band already ≥100 confirmed
+    'was_new':   ("#5a5000", "#ffff00"),  # WAS: state not yet worked on this band
 }
 
 _CRIT_ABBR: dict[str, str] = {
@@ -68,19 +69,39 @@ _CRIT_ABBR: dict[str, str] = {
     'digital': 'Dig',
     'ssb':     'SSB',
     '6m':      '6M',
+    'was':     'WAS',
 }
 
 
 def make_app_icon() -> QIcon:
     """Load and return the DX Spotter application icon.
 
+    The source PNG is 1024×1024 px.  Loading it as a single ``QIcon`` tells
+    macOS the icon's natural size is 1024 logical points, so the dock shows
+    it larger than other icons when the app registers itself at runtime.
+
+    Instead, pre-scale the source into the standard macOS icon sizes and add
+    each as a separate pixmap.  Qt builds a multi-representation ``NSImage``
+    from these, macOS picks the representation closest to the current dock
+    tile size, and the icon appears the same apparent size as every other
+    dock icon — identical behaviour to a bundle ``.icns`` file.
+
     Returns
     -------
     QIcon
-        Icon loaded from ``src/icons/dxspot.png`` relative to this module.
+        Multi-resolution icon for the dock and title bar.
     """
+    from PyQt6.QtCore import Qt as _Qt
     path = os.path.join(os.path.dirname(__file__), "icons", "dxspot.png")
-    return QIcon(path)
+    src = QPixmap(path)  # 1024×1024 master
+    icon = QIcon()
+    for size in (16, 32, 64, 128, 256, 512):
+        icon.addPixmap(
+            src.scaled(size, size,
+                       _Qt.AspectRatioMode.KeepAspectRatio,
+                       _Qt.TransformationMode.SmoothTransformation)
+        )
+    return icon
 
 
 def _format_age(seconds: int) -> str:
@@ -136,6 +157,19 @@ def _award_qsl_label(status: str, criterion: str, band: str,
     return f"New [{abbr}]"
 
 
+def _was_qsl_label(status: str, state: str, band: str) -> str:
+    """Build the QSL column text for the WAS criterion."""
+    abbr = f"WAS/{band.lower()}" if band else "WAS"
+    state_part = f": {state}" if state else ""
+    if status == 'confirmed':
+        return f"Conf [{abbr}]{state_part}"
+    if status == 'worked':
+        return f"Wkd [{abbr}]{state_part}"
+    if status == 'n/a':
+        return f"— [{abbr}]"
+    return f"New [{abbr}]{state_part}"
+
+
 class _AgeItem(QTableWidgetItem):
     """Age column item: displays human-readable age, sorts by unix_time stored in UserRole.
 
@@ -164,7 +198,7 @@ class SpotTable(QWidget):
     A separate 15 s timer updates the Age column and removes rows that have
     exceeded ``_max_age_secs``.
 
-    Each row is coloured according to the active DXCC award criterion and the
+    Each row is colored according to the active DXCC award criterion and the
     spot's mode, using the :data:`AWARD_COLORS` palette.  When the criterion
     or ADIF log changes, :meth:`set_criterion` and :meth:`set_adif_log` trigger
     a full re-style pass.
@@ -174,13 +208,15 @@ class SpotTable(QWidget):
     spot_activated : pyqtSignal(dict)
         Emitted when the user double-clicks a spot row.  The dict contains
         the spot-action fields stored in ``_SPOT_ROLE`` on the DX Call cell.
-    spots_expired : pyqtSignal(int, int)
-        Emitted after the age-expiry pass with ``(psk_removed, wsjt_removed)``
+    spots_expired : pyqtSignal(int, int, int, int)
+        Emitted after the age-expiry pass with
+        ``(psk_removed, wsjt_removed, telnet1_removed, telnet2_removed)``
         counts so :class:`~dxspotter.DXSpotter` can decrement its counters.
     """
 
-    spot_activated = pyqtSignal(dict)   # double-click on a row → DXSpotter
-    spots_expired  = pyqtSignal(int, int)  # (psk_removed, wsjt_removed) when rows age out
+    spot_activated = pyqtSignal(dict)        # double-click on a row → DXSpotter
+    # (psk_removed, wsjt_removed, telnet1_removed, telnet2_removed) on row expiry
+    spots_expired  = pyqtSignal(int, int, int, int)
 
     _MODE_SORT: dict[str, int] = {"CW": 0, "SSB": 1, "FT4": 2, "FT8": 3, "FT2": 4}
 
@@ -308,14 +344,20 @@ class SpotTable(QWidget):
             band = data.get('band', '')
             mode = data.get('mode', '')
             if adif is not None:
-                if adif.mode_matches_criterion(mode, criterion):
+                if criterion == 'was':
+                    if dxcc == 291:
+                        status = adif.was_status(adif.call_state(call), band)
+                    else:
+                        status = 'n/a'
+                elif adif.mode_matches_criterion(mode, criterion):
                     status = _effective_status(adif.award_status(dxcc, band, criterion),
                                                criterion, band, adif)
                 else:
                     status = 'n/a'
             else:
                 status = 'new'
-            bg_hex, fg_hex = AWARD_COLORS.get(status, AWARD_COLORS['new'])
+            color_key = 'was_new' if criterion == 'was' and status == 'new' else status
+            bg_hex, fg_hex = AWARD_COLORS.get(color_key, AWARD_COLORS['new'])
             bg = QColor(bg_hex)
             fg = QColor(fg_hex)
             for col in range(self.table.columnCount()):
@@ -325,12 +367,12 @@ class SpotTable(QWidget):
                     cell.setForeground(fg)
 
     def set_adif_log(self, adif_log: 'ADIFLog | None') -> None:
-        """Replace the contact log used for award-status colouring.
+        """Replace the contact log used for award-status coloring.
 
         Parameters
         ----------
         adif_log : ADIFLog or None
-            New log instance, or ``None`` to clear (all spots coloured as
+            New log instance, or ``None`` to clear (all spots colored as
             ``'new'``).  Call :meth:`set_criterion` after this to trigger a
             re-style pass.
         """
@@ -396,7 +438,12 @@ class SpotTable(QWidget):
             adif = self._adif_log
             if adif is None:
                 return False
-            if adif.mode_matches_criterion(mode, self._criterion):
+            if self._criterion == 'was':
+                if dxcc == 291:
+                    status = adif.was_status(adif.call_state(call_item.text()), band)
+                else:
+                    status = 'n/a'
+            elif adif.mode_matches_criterion(mode, self._criterion):
                 status = adif.award_status(dxcc, band, self._criterion)
             else:
                 status = 'n/a'
@@ -431,10 +478,21 @@ class SpotTable(QWidget):
         dxcc = spot.get('dxcc', -1)
         band = spot.get('b', '')
         mode = spot.get('md', '')
+        call = spot['call']
 
         adif = self._adif_log
         criterion = self._criterion
-        if adif is not None:
+        state = ''
+        if criterion == 'was':
+            conf_list, wkd_list = [], []
+            if adif is not None and dxcc == 291:
+                state = adif.call_state(call)
+                status = adif.was_status(state, band)
+            elif adif is None:
+                status = 'new'
+            else:
+                status = 'n/a'
+        elif adif is not None:
             if adif.mode_matches_criterion(mode, criterion):
                 status = _effective_status(adif.award_status(dxcc, band, criterion),
                                            criterion, band, adif)
@@ -444,7 +502,8 @@ class SpotTable(QWidget):
         else:
             status, conf_list, wkd_list = 'new', [], []
 
-        bg_hex, fg_hex = AWARD_COLORS.get(status, AWARD_COLORS['new'])
+        color_key = 'was_new' if criterion == 'was' and status == 'new' else status
+        bg_hex, fg_hex = AWARD_COLORS.get(color_key, AWARD_COLORS['new'])
         bg = QColor(bg_hex)
         fg = QColor(fg_hex)
 
@@ -458,7 +517,10 @@ class SpotTable(QWidget):
         row = 0
 
         range_km = spot.get('range', 0)
-        qsl_text = _award_qsl_label(status, criterion, band, conf_list, wkd_list)
+        if criterion == 'was':
+            qsl_text = _was_qsl_label(status, state, band)
+        else:
+            qsl_text = _award_qsl_label(status, criterion, band, conf_list, wkd_list)
 
         values = [
             spot['call'],                        # DX Call
@@ -573,8 +635,19 @@ class SpotTable(QWidget):
             dxcc = data.get('dxcc', -1)
             band = data.get('band', '')
             mode = data.get('mode', '')
+            call = call_item.text()
 
-            if adif is not None:
+            state = ''
+            if criterion == 'was':
+                conf_list, wkd_list = [], []
+                if adif is not None and dxcc == 291:
+                    state = adif.call_state(call)
+                    status = adif.was_status(state, band)
+                elif adif is None:
+                    status = 'new'
+                else:
+                    status = 'n/a'
+            elif adif is not None:
                 if adif.mode_matches_criterion(mode, criterion):
                     status = _effective_status(adif.award_status(dxcc, band, criterion),
                                                criterion, band, adif)
@@ -584,7 +657,8 @@ class SpotTable(QWidget):
             else:
                 status, conf_list, wkd_list = 'new', [], []
 
-            bg_hex, fg_hex = AWARD_COLORS.get(status, AWARD_COLORS['new'])
+            color_key = 'was_new' if criterion == 'was' and status == 'new' else status
+            bg_hex, fg_hex = AWARD_COLORS.get(color_key, AWARD_COLORS['new'])
             bg = QColor(bg_hex)
             fg = QColor(fg_hex)
 
@@ -596,7 +670,10 @@ class SpotTable(QWidget):
 
             qsl_item = self.table.item(row, QSL_COL)
             if qsl_item is not None:
-                qsl_item.setText(_award_qsl_label(status, criterion, band, conf_list, wkd_list))
+                if criterion == 'was':
+                    qsl_item.setText(_was_qsl_label(status, state, band))
+                else:
+                    qsl_item.setText(_award_qsl_label(status, criterion, band, conf_list, wkd_list))
 
         self.table.setUpdatesEnabled(True)
         self.table.setSortingEnabled(True)
@@ -625,15 +702,21 @@ class SpotTable(QWidget):
             else:
                 item.setText(_format_age(int(age)))
 
-        psk_removed = wsjt_removed = 0
+        psk_removed = wsjt_removed = telnet1_removed = telnet2_removed = 0
         for row, source in reversed(expired_rows):
             self.table.removeRow(row)
             if source == 'wsjt':
                 wsjt_removed += 1
+            elif source == 'telnet1':
+                telnet1_removed += 1
+            elif source == 'telnet2':
+                telnet2_removed += 1
             else:
                 psk_removed += 1
-        if psk_removed or wsjt_removed:
-            self.spots_expired.emit(psk_removed, wsjt_removed)
+        if psk_removed or wsjt_removed or telnet1_removed or telnet2_removed:
+            self.spots_expired.emit(
+                psk_removed, wsjt_removed, telnet1_removed, telnet2_removed
+            )
 
     # -- context menu ---------------------------------------------------------
 

@@ -5,13 +5,11 @@ WSJT-X UDP listener, the Qt GUI (:class:`~main_window.MainWindow`), and the
 ADIF / RumLogNG contact log.  Application entry point is :func:`main`.
 """
 import argparse
-import json
 import signal
 import sys
 import threading
 import time
 
-import paho.mqtt.client as mqtt
 from colorama import Fore, Style
 from pyhamtools import LookupLib, Callinfo
 from pyhamtools.locator import calculate_distance as qth_distance
@@ -23,8 +21,26 @@ from adif_log import ADIFLog
 from appconfig import AppConfig, config_path, load_config, save_config
 from commander_client import CommanderClient, is_available as commander_available
 from main_window import MainWindow, make_app_icon
+from mqtt_listener import MqttListener
 from settings_dialog import SettingsDialog
-from wsjtx_listener import WsjtxListener
+from telnet_cluster import TelnetCluster
+from wsjtx_listener import WsjtxListener, freq_to_band
+
+# Ham band frequency boundaries in kHz; used to map Commander VFO to band string.
+_BAND_RANGES: list[tuple[float, float, str]] = [
+    (1800.0,   2000.0,  '160m'),
+    (3500.0,   4000.0,  '80m'),
+    (5330.0,   5410.0,  '60m'),
+    (7000.0,   7300.0,  '40m'),
+    (10100.0, 10150.0,  '30m'),
+    (14000.0, 14350.0,  '20m'),
+    (18068.0, 18168.0,  '17m'),
+    (21000.0, 21450.0,  '15m'),
+    (24890.0, 24990.0,  '12m'),
+    (28000.0, 29700.0,  '10m'),
+    (50000.0, 54000.0,   '6m'),
+    (144000.0, 148000.0, '2m'),
+]
 
 
 class DXSpotter:
@@ -53,9 +69,13 @@ class DXSpotter:
     cinfo : Callinfo or None
         pyhamtools callsign lookup object (country file backend).
     psk_counter : int
-        Number of PSK Reporter spots received in the current session.
+        Number of PSK Reporter spots currently in the table.
     wsjt_counter : int
-        Number of WSJT-X spots received in the current session.
+        Number of WSJT-X spots currently in the table.
+    telnet1_counter : int
+        Number of DX Cluster 1 spots currently in the table.
+    telnet2_counter : int
+        Number of DX Cluster 2 spots currently in the table.
     topic : str or None
         Active PSK Reporter MQTT subscription topic string.
     my_grid : str
@@ -81,22 +101,28 @@ class DXSpotter:
     }
 
     def __init__(self) -> None:
-        """Initialise instance variables; call :meth:`run` to start the application."""
+        """Initialize instance variables; call :meth:`run` to start the application."""
         self.args: argparse.Namespace | None = None
         self.cinfo: Callinfo | None = None
         self.psk_counter: int = 0
         self.wsjt_counter: int = 0
+        self.telnet1_counter: int = 0
+        self.telnet2_counter: int = 0
         self.topic: str | None = None
         self.my_grid: str = "FM05kw"
         self.window: MainWindow | None = None
         self.adif_log: ADIFLog | None = None
         self.wsjt_listener: WsjtxListener | None = None
-        self._mqtt_client: mqtt.Client | None = None
+        self._telnet1: TelnetCluster | None = None
+        self._telnet2: TelnetCluster | None = None
+        self._mqtt_listener: MqttListener | None = None
         self._current_adif_path: str = ''
         self._criterion: str = 'mixed'
         self._config: AppConfig = AppConfig()
         self._last_wsjt_heartbeat: float = 0.0  # epoch of most recent HB from WSJT-X
-        self._mqtt_connected: bool = False
+        self._commander_freq_khz: float = 0.0   # latest RX freq from Commander (GIL-safe)
+        self._commander_stop_event: threading.Event = threading.Event()
+        self._commander_poll_thread: threading.Thread | None = None
 
     # -- radio control --------------------------------------------------------
 
@@ -239,12 +265,9 @@ class DXSpotter:
 
         # Rebuild MQTT topic and resubscribe if it changed
         new_topic = self.build_topic()
-        if new_topic != self.topic and self._mqtt_client is not None:
-            if self.topic:
-                self._mqtt_client.unsubscribe(self.topic)
+        if new_topic != self.topic and self._mqtt_listener is not None:
             self.topic = new_topic
-            self._mqtt_client.subscribe(self.topic)
-            print(f"Resubscribed to: {self.topic}")
+            self._mqtt_listener.resubscribe(self.topic)
 
         # Reload ADIF if the path changed
         new_adif = settings['adif_path']
@@ -259,6 +282,8 @@ class DXSpotter:
                 self.args.range != old_range):
             self.psk_counter = 0
             self.wsjt_counter = 0
+            self.telnet1_counter = 0
+            self.telnet2_counter = 0
             if self.window is not None:
                 self.window.clear_table()
 
@@ -307,76 +332,26 @@ class DXSpotter:
 
     def _restart(self) -> None:
         """Clear the table and re-subscribe to the current topic."""
-        self.psk_counter  = 0
+        self.psk_counter = 0
         self.wsjt_counter = 0
+        self.telnet1_counter = 0
+        self.telnet2_counter = 0
         if self.window is not None:
             self.window.clear_table()
-        if self._mqtt_client is not None and self.topic:
-            self._mqtt_client.unsubscribe(self.topic)
-            self._mqtt_client.subscribe(self.topic)
+        if self._mqtt_listener is not None and self.topic:
+            self._mqtt_listener.resubscribe(self.topic)
             print(f"Restarted — subscribed to: {self.topic}")
 
-    # -- MQTT callbacks -------------------------------------------------------
+    # -- PSK Reporter spot callback -------------------------------------------
 
-    def on_connect(self, client, userdata, flags, rc, properties) -> None:
-        """MQTT callback fired when the broker connection is established.
+    def _on_psk_spot(self, payload: dict) -> None:
+        """Process one raw PSK Reporter JSON payload from :class:`~mqtt_listener.MqttListener`.
 
-        Subscribes to the current topic and sets the connected flag so the
-        status bar indicator turns green on the next timer tick.
+        Applies mode / range / geographic grid filters, performs callsign and
+        DXCC lookups, and emits an enriched spot dict to the Qt spot table via
+        :attr:`~main_window.MainWindow.new_spot`.
 
-        Parameters
-        ----------
-        client : mqtt.Client
-            The Paho MQTT client instance.
-        userdata : object
-            User data (unused).
-        flags : dict
-            Connection flags from the broker.
-        rc : int
-            Connection result code (0 = success).
-        properties : mqtt.Properties
-            MQTT v5 properties (unused for v3.1.1).
-        """
-        self._mqtt_connected = True
-        print("Connected with result code " + str(rc))
-        print(f"Subscribing to topic: {self.topic}")
-        client.subscribe(self.topic)
-
-    def on_disconnect(self, client, userdata, flags, rc, properties) -> None:
-        """MQTT callback fired when the broker connection is lost or closed.
-
-        Clears the connected flag so the status bar indicator changes colour
-        on the next timer tick.
-
-        Parameters
-        ----------
-        client : mqtt.Client
-            The Paho MQTT client instance.
-        userdata : object
-            User data (unused).
-        flags : dict
-            Disconnect flags.
-        rc : int
-            Disconnect result code (0 = clean disconnect).
-        properties : mqtt.Properties
-            MQTT v5 properties (unused for v3.1.1).
-        """
-        self._mqtt_connected = False
-        print(f"MQTT disconnected (rc={rc})")
-
-    def on_message(self, client, userdata, msg) -> None:
-        """MQTT callback fired for each incoming PSK Reporter spot message.
-
-        Decodes the JSON payload, applies mode / range / geographic grid
-        filters, performs callsign lookup, and emits the spot to the Qt spot
-        table via :attr:`~main_window.MainWindow.new_spot`.
-
-        The geographic filter (``rx_grids``) currently restricts spots to
-        those reported by stations whose Maidenhead grid square starts with one
-        of ``['FM', 'FN', 'FL', 'EL', 'EN', 'EM']`` — US East Coast and
-        Southeast grid prefixes.
-
-        PSK Reporter MQTT payload fields used:
+        PSK Reporter payload fields used:
 
         * ``t``  — Unix timestamp of the spot.
         * ``f``  — absolute frequency in Hz.
@@ -390,123 +365,117 @@ class DXSpotter:
 
         Parameters
         ----------
-        client : mqtt.Client
-            The Paho MQTT client instance (unused inside the callback).
-        userdata : object
-            User data (unused).
-        msg : mqtt.MQTTMessage
-            Incoming MQTT message; ``msg.payload`` is UTF-8 JSON.
+        payload : dict
+            Parsed JSON dict from :class:`~mqtt_listener.MqttListener`.
+            Invoked from the Paho network thread; emits via a queued Qt signal.
         """
         assert self.args is not None
+        self.psk_counter += 1
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(payload['t']))
+        scall = payload['sc'].replace(".", "/")
+
+        if self.args.mode is not None:
+            match self.args.mode.upper():
+                case "FT8":
+                    if payload['md'] != "FT8": return
+                case "FT4":
+                    if payload['md'] != "FT4": return
+                case "FT2":
+                    if payload['md'] != "FT2": return
+                case "CW":
+                    if payload['md'] != "CW":  return
+                case "SSB":
+                    if payload['md'] != "SSB": return
+                case "FT":
+                    if payload['md'] not in ["FT4", "FT8", "FT2"]: return
+                case "FC":
+                    if payload['md'] not in ["CW", "FT4", "FT8", "FT2"]: return
+                case "FCS":
+                    if payload['md'] not in ["CW", "FT4", "FT8", "FT2", "SSB"]: return
+                case "CS":
+                    if payload['md'] not in ["CW", "SSB"]: return
+                case _:
+                    return
+
+        if payload['md'] == 'CW':
+            colorline = Fore.GREEN
+        elif payload['md'] in ['FT4', 'FT8', 'FT2']:
+            colorline = Fore.CYAN
+        elif payload['md'] == 'SSB':
+            colorline = Fore.MAGENTA
+        else:
+            colorline = Fore.YELLOW
+
+        if self.args.call is not None and scall == self.args.call.replace(".", "/").upper():
+            call = payload['rc'].replace(".", "/")
+            loc = payload['rl']
+            direction = "TX"
+            color = colorline + "| TX"
+        else:
+            call = scall
+            loc = payload['sl']
+            direction = "RX"
+            color = colorline + "| RX"
+
+        country = self.get_country_text(call)
+
+        freq_offset = self.get_freq_offset(payload['f'], payload['b'], payload['md'])
         try:
-            payload = json.loads(msg.payload)
-            self.psk_counter += 1
-            timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(payload['t']))
-            scall = payload['sc'].replace(".", "/")
+            distance = int(qth_distance(payload['sl'], payload['rl']))
+            range_km = int(qth_distance(self.my_grid, payload['rl']))
+        except Exception:
+            return
+        if self.args.range is not None and range_km > self.args.range:
+            return
 
-            if self.args.mode is not None:
-                match self.args.mode.upper():
-                    case "FT8":
-                        if payload['md'] != "FT8": return
-                    case "FT4":
-                        if payload['md'] != "FT4": return
-                    case "FT2":
-                        if payload['md'] != "FT2": return
-                    case "CW":
-                        if payload['md'] != "CW":  return
-                    case "SSB":
-                        if payload['md'] != "SSB": return
-                    case "FT":
-                        if payload['md'] not in ["FT4", "FT8", "FT2"]: return
-                    case "FC":
-                        if payload['md'] not in ["CW", "FT4", "FT8", "FT2"]: return
-                    case "FCS":
-                        if payload['md'] not in ["CW", "FT4", "FT8", "FT2", "SSB"]: return
-                    case "CS":
-                        if payload['md'] not in ["CW", "SSB"]: return
-                    case _:
-                        return
+        if payload['rp'] is None:
+            payload['rp'] = "N/A"
 
-            if payload['md'] == 'CW':
-                colorline = Fore.GREEN
-            elif payload['md'] in ['FT4', 'FT8', 'FT2']:
-                colorline = Fore.CYAN
-            elif payload['md'] == 'SSB':
-                colorline = Fore.MAGENTA
-            else:
-                colorline = Fore.YELLOW
+        rx_grids = self._config.rx_grid_prefixes
+        if rx_grids and not any(payload['rl'].startswith(g) for g in rx_grids):
+            return
 
-            if self.args.call is not None and scall == self.args.call.replace(".", "/").upper():
-                call = payload['rc'].replace(".", "/")
-                loc = payload['rl']
-                direction = "TX"
-                color = colorline + "| TX"
-            else:
-                call = scall
-                loc = payload['sl']
-                direction = "RX"
-                color = colorline + "| RX"
+        dxcc = self.get_dxcc(call)
 
-            country = self.get_country_text(call)
+        total = self.psk_counter + self.wsjt_counter
 
-            freq_offset = self.get_freq_offset(payload['f'], payload['b'], payload['md'])
-            try:
-                distance = int(qth_distance(payload['sl'], payload['rl']))
-                range_km = int(qth_distance(self.my_grid, payload['rl']))
-            except Exception:
-                return
-            if self.args.range is not None and range_km > self.args.range:
-                return
+        if self.args.terminal:
+            print(
+                f"{total:06d} | {color} | {timestamp:19} | {call:10} | {loc:10} | {payload['rp']:3} dB | "
+                f"{country:20} | {freq_offset:4} Hz | {distance:5} km | {payload['md']:5} | {payload['b']:4} | "
+                f" {payload['rc']:10} | {payload['rl']:10} | {range_km:5}"
+                f"{Style.RESET_ALL}"
+            )
 
-            if payload['rp'] is None:
-                payload['rp'] = "N/A"
-
-            rx_grids = self._config.rx_grid_prefixes
-            if rx_grids and not any(payload['rl'].startswith(g) for g in rx_grids):
-                return
-
-            dxcc = self.get_dxcc(call)
-
-            total = self.psk_counter + self.wsjt_counter
-
-            if self.args.terminal:
-                print(
-                    f"{total:06d} | {color} | {timestamp:19} | {call:10} | {loc:10} | {payload['rp']:3} dB | "
-                    f"{country:20} | {freq_offset:4} Hz | {distance:5} km | {payload['md']:5} | {payload['b']:4} | "
-                    f" {payload['rc']:10} | {payload['rl']:10} | {range_km:5}"
-                    f"{Style.RESET_ALL}"
-                )
-
-            if self.window is not None:
-                self.window.new_spot.emit({
-                    "counter":     total,
-                    "direction":   direction,
-                    "timestamp":   timestamp,
-                    "call":        call,
-                    "loc":         loc,
-                    "rp":          payload['rp'],
-                    "country":     country,
-                    "freq_offset": freq_offset,
-                    "distance":    distance,
-                    "md":          payload['md'],
-                    "b":           payload['b'],
-                    "rc":          payload['rc'],
-                    "rl":          payload['rl'],
-                    "range":       range_km,
-                    "unix_time":   payload['t'],
-                    "dxcc":        dxcc,
-                    "source":      "psk",
-                })
-
-        except json.JSONDecodeError as e:
-            print("Error processing message:", str(e))
+        if self.window is not None:
+            self.window.new_spot.emit({
+                "counter":      total,
+                "direction":    direction,
+                "timestamp":    timestamp,
+                "call":         call,
+                "loc":          loc,
+                "rp":           payload['rp'],
+                "country":      country,
+                "freq_offset":  freq_offset,
+                "distance":     distance,
+                "md":           payload['md'],
+                "b":            payload['b'],
+                "rc":           payload['rc'],
+                "rl":           payload['rl'],
+                "range":        range_km,
+                "unix_time":    payload['t'],
+                "dxcc":         dxcc,
+                "source":       "psk",
+                "abs_freq_hz":  payload['f'],
+            })
 
     # -- WSJT-X callback ------------------------------------------------------
 
     def _on_wsjt_spot(self, dx_call: str, dx_grid: str, snr: int,
                       df: int, mode: str, band: str,
                       unix_time: float, msg: str = '',
-                      delta_t: float = 0.0) -> None:
+                      delta_t: float = 0.0,
+                      abs_freq_hz: int = 0) -> None:
         # Called from the WsjtxListener background thread when a new decode
         # passes the RESHOW_SECS gate. No range filter is applied: we decoded
         # the signal directly so the station is reachable by definition.
@@ -538,25 +507,107 @@ class DXSpotter:
 
         if self.window is not None:
             self.window.new_spot.emit({
-                "counter":     total,
-                "direction":   "RX",
-                "timestamp":   timestamp,
-                "call":        dx_call,
-                "loc":         dx_grid,
-                "rp":          f"{snr:+d}",
-                "country":     country,
-                "freq_offset": df,
-                "distance":    dist_km,
-                "md":          mode,
-                "b":           band,
-                "rc":          self.args.call or "WSJT-X",
-                "rl":          self.my_grid,
-                "range":       0,
-                "unix_time":   unix_time,
-                "dxcc":        dxcc,
-                "source":      "wsjt",
-                "msg":         msg,
-                "delta_t":     delta_t,
+                "counter":      total,
+                "direction":    "RX",
+                "timestamp":    timestamp,
+                "call":         dx_call,
+                "loc":          dx_grid,
+                "rp":           f"{snr:+d}",
+                "country":      country,
+                "freq_offset":  df,
+                "distance":     dist_km,
+                "md":           mode,
+                "b":            band,
+                "rc":           self.args.call or "WSJT-X",
+                "rl":           self.my_grid,
+                "range":        0,
+                "unix_time":    unix_time,
+                "dxcc":         dxcc,
+                "source":       "wsjt",
+                "msg":          msg,
+                "delta_t":      delta_t,
+                "abs_freq_hz":  abs_freq_hz,  # absolute Hz — used by BandMap
+            })
+
+    # Mode → allowed set, used in both PSK and telnet mode filters
+    _MODE_FILTER: dict[str, frozenset[str]] = {
+        'FT8': frozenset({'FT8'}),
+        'FT4': frozenset({'FT4'}),
+        'FT2': frozenset({'FT2'}),
+        'CW':  frozenset({'CW'}),
+        'SSB': frozenset({'SSB'}),
+        'FT':  frozenset({'FT4', 'FT8', 'FT2'}),
+        'FC':  frozenset({'CW', 'FT4', 'FT8', 'FT2'}),
+        'FCS': frozenset({'CW', 'FT4', 'FT8', 'FT2', 'SSB'}),
+        'CS':  frozenset({'CW', 'SSB'}),
+    }
+
+    def _on_telnet_spot(self, raw: dict, index: int) -> None:
+        # Enrich a raw TelnetCluster spot dict and forward it to the spot table.
+        # Called from a TelnetCluster background thread — only uses Qt signals
+        # (thread-safe) for all GUI interactions.
+        assert self.args is not None
+        call = raw['call']
+        freq_hz = raw['abs_freq_hz']
+        mode = raw.get('md', '')
+
+        # Apply mode filter
+        if self.args.mode is not None:
+            allowed = self._MODE_FILTER.get(self.args.mode.upper())
+            if allowed is not None and mode not in allowed:
+                return
+
+        band = freq_to_band(freq_hz)
+        if not band:
+            return  # frequency outside recognized ham bands
+
+        # Apply band filter when a specific band is selected
+        if self.args.band is not None and band != self.args.band:
+            return
+
+        dxcc = self.get_dxcc(call)
+        country = self.get_country_text(call)
+        freq_offset = self.get_freq_offset(freq_hz, band, mode)
+        unix_time = raw['unix_time']
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(unix_time))
+
+        if index == 1:
+            self.telnet1_counter += 1
+        else:
+            self.telnet2_counter += 1
+        total = (self.psk_counter + self.wsjt_counter
+                 + self.telnet1_counter + self.telnet2_counter)
+
+        if self.args.terminal:
+            print(
+                f"{total:06d} | TLN{index} | {timestamp} | {call:10} | "
+                f"{raw['rp']} dB | {country:20} | "
+                f"{freq_hz / 1000:.1f} kHz | {mode:5} | {band:4} | "
+                f"{raw['rc']:10}"
+            )
+
+        if self.window is not None:
+            self.window.new_spot.emit({
+                'counter':     total,
+                'direction':   'RX',
+                'timestamp':   timestamp,
+                'call':        call,
+                'loc':         '',
+                'rp':          raw['rp'],
+                'country':     country,
+                'freq_offset': freq_offset,
+                'distance':    0,
+                'md':          mode,
+                'b':           band,
+                'rc':          raw['rc'],
+                'rl':          '',
+                'range':       0,
+                'unix_time':   unix_time,
+                'dxcc':        dxcc,
+                'source':      f'telnet{index}',
+                'abs_freq_hz': freq_hz,
+                'msg':         raw.get('comment', ''),
+                'delta_t':     0.0,
             })
 
     _WSJT_DIGITAL = frozenset({'FT8', 'FT4', 'FT2'})
@@ -624,6 +675,43 @@ class DXSpotter:
                   f"using spot-row values")
 
         loc = spot_data.get('loc', '')
+
+        # QSY the rig to the standard FT8/FT4/FT2 dial frequency so Commander
+        # does not leave the radio on the previous CW/SSB frequency.
+        if self._config.commander_enabled:
+            band = spot_data.get('b', '')
+            dial_hz = self.get_base_freq(band, mode)
+            if dial_hz > 0:
+                dial_khz = dial_hz / 1000.0
+                _host = self._config.commander_host
+                _port = self._config.commander_port
+                _timeout = self._config.commander_timeout
+                _verify_delay = self._config.commander_verify_delay
+                _call = call
+
+                def _qsy_digital() -> None:
+                    try:
+                        if not commander_available(_host, _port):
+                            print(f"Commander not reachable at {_host}:{_port}")
+                            return
+                        client = CommanderClient(host=_host, port=_port, timeout=_timeout)
+                        result = client.set_freq_and_mode(
+                            dial_khz, 'DATA-U', verify_delay=_verify_delay
+                        )
+                        if result.success:
+                            print(
+                                f"Commander QSY: {_call} → {dial_khz:.3f} kHz DATA-U "
+                                f"({mode})"
+                            )
+                        else:
+                            print(
+                                f"Commander QSY failed for {_call}: {result.errors}"
+                            )
+                    except Exception as exc:
+                        print(f"Commander QSY exception for {_call}: {exc}")
+
+                threading.Thread(target=_qsy_digital, daemon=True).start()
+
         self.wsjt_listener.highlight_call(call, bg=(255, 200, 0), fg=(0, 0, 0))
         # Configure sets DX call, Rx DF, and generates standard messages
         # without needing a band-activity match (unlike Reply).
@@ -654,17 +742,38 @@ class DXSpotter:
         if box.clickedButton() is send_btn:
             self._send_to_wsjt(spot_data)
 
-    def _on_spots_expired(self, psk_removed: int, wsjt_removed: int) -> None:
-        self.psk_counter  = max(0, self.psk_counter  - psk_removed)
+    def _on_spots_expired(
+        self,
+        psk_removed: int,
+        wsjt_removed: int,
+        telnet1_removed: int,
+        telnet2_removed: int,
+    ) -> None:
+        self.psk_counter = max(0, self.psk_counter - psk_removed)
         self.wsjt_counter = max(0, self.wsjt_counter - wsjt_removed)
+        self.telnet1_counter = max(0, self.telnet1_counter - telnet1_removed)
+        self.telnet2_counter = max(0, self.telnet2_counter - telnet2_removed)
 
     def _update_pskr_status(self) -> None:
         if self.window is None:
             return
-        if self._mqtt_connected:
+        connected = self._mqtt_listener.connected if self._mqtt_listener is not None else False
+        if connected:
             self.window.set_pskr_status("PSKR: connected", ok=True)
         else:
             self.window.set_pskr_status("PSKR: connecting…", ok=None)
+
+    def _update_telnet_status(self) -> None:
+        # Poll each cluster's connected property and update the T1/T2 status bar labels.
+        if self.window is None:
+            return
+        for index, cluster in ((1, self._telnet1), (2, self._telnet2)):
+            if cluster is None:
+                self.window.set_telnet_status(index, f"T{index}: off", ok=None)
+            elif cluster.connected:
+                self.window.set_telnet_status(index, f"T{index}: connected", ok=True)
+            else:
+                self.window.set_telnet_status(index, f"T{index}: connecting…", ok=False)
 
     def _on_wsjt_heartbeat(self) -> None:
         """Called from the WSJT-X listener thread on first packet and each incoming Heartbeat."""
@@ -674,15 +783,22 @@ class DXSpotter:
         """Polled from the main-thread QTimer; updates the status bar WSJT-X indicator."""
         if self.window is None or self.wsjt_listener is None:
             return
-        elapsed = time.time() - self._last_wsjt_heartbeat
+        now = time.time()
+        elapsed_hb = now - self._last_wsjt_heartbeat
         if self._last_wsjt_heartbeat == 0.0:
             self.window.set_wsjt_status("WSJT-X: waiting…", ok=None)
-        elif elapsed < 45:
-            self.window.set_wsjt_status("WSJT-X: connected", ok=True)
-        else:
+        elif elapsed_hb >= 45:
             self.window.set_wsjt_status(
-                f"WSJT-X: no signal ({int(elapsed)}s)", ok=False
+                f"WSJT-X: no signal ({int(elapsed_hb)}s)", ok=False
             )
+        else:
+            # Connected — check whether any Decode packets have arrived recently.
+            no_spot_secs = self._config.wsjt_no_spot_mins * 60
+            last_dec = self.wsjt_listener.last_decode_time
+            if last_dec == 0.0 or (now - last_dec) > no_spot_secs:
+                self.window.set_wsjt_status("WSJT-X: no decodes", ok='warn')
+            else:
+                self.window.set_wsjt_status("WSJT-X: connected", ok=True)
 
     def _on_call_busy(self, call: str) -> None:
         """Called from WSJT-X listener thread when a CQ caller enters a QSO."""
@@ -744,6 +860,61 @@ class DXSpotter:
             return psk_mode
         return None
 
+    @staticmethod
+    def _freq_to_band(freq_khz: float) -> str | None:
+        for lo, hi, band in _BAND_RANGES:
+            if lo <= freq_khz <= hi:
+                return band
+        return None
+
+    def _commander_poll_loop(self) -> None:
+        # Background daemon thread: query Commander for RX frequency every 1 s.
+        # Writes result to _commander_freq_khz (GIL-safe float); 0.0 on error.
+        while not self._commander_stop_event.is_set():
+            if self._config.commander_enabled:
+                try:
+                    client = CommanderClient(
+                        host=self._config.commander_host,
+                        port=self._config.commander_port,
+                        timeout=0.15,
+                    )
+                    self._commander_freq_khz = client.get_rx_freq_khz()
+                except OSError:
+                    self._commander_freq_khz = 0.0
+            else:
+                self._commander_freq_khz = 0.0
+            self._commander_stop_event.wait(1.0)
+
+    def _update_commander_band(self) -> None:
+        # Called from the 250 ms Qt timer.  If Commander has seen a new band,
+        # update the Band parameter — which triggers the normal settings-change
+        # chain (MQTT resubscribe, table clear, WAS label update).
+        if not self._config.commander_enabled or self.window is None:
+            return
+        freq = self._commander_freq_khz
+        if freq <= 0.0:
+            return
+        band = self._freq_to_band(freq)
+        if band is None or band == self.args.band:
+            return
+        self.window._params.child('Data Filters').child('Band').setValue(band)  # noqa: SLF001
+
+    def _effective_bandmap_band(self) -> str | None:
+        # Determine the band the bandmap should display, in priority order:
+        # 1. Explicit band filter (args.band) — set by user or Commander tracking.
+        # 2. Commander VFO frequency (if connected).
+        # 3. WSJT-X dial frequency (if listener is active and tuned).
+        # 4. None — bandmap shows nothing.
+        if self.args is None:
+            return None
+        if self.args.band is not None:
+            return self.args.band
+        if self._commander_freq_khz > 0:
+            return self._freq_to_band(self._commander_freq_khz)
+        if self.wsjt_listener is not None and self.wsjt_listener.dial_freq > 0:
+            return freq_to_band(self.wsjt_listener.dial_freq)
+        return None
+
     def _on_criterion_changed(self, criterion: str) -> None:
         # Slot connected to MainWindow.criterion_changed.
         # Updates the stored criterion and asks the spot table to restyle all rows.
@@ -761,7 +932,7 @@ class DXSpotter:
 
         1. Load persisted :class:`~appconfig.AppConfig` from the config file.
         2. Parse command-line arguments (CLI values override config values).
-        3. Initialise the pyhamtools callsign lookup library.
+        3. Initialize the pyhamtools callsign lookup library.
         4. Load the contact log (ADIF or RumLogNG).
         5. Create the Qt application and :class:`~main_window.MainWindow`.
         6. Connect signals between the window and this controller.
@@ -833,7 +1004,12 @@ class DXSpotter:
         app = QApplication(sys.argv)
         app.setStyle('Fusion')
         signal.signal(signal.SIGINT, signal.SIG_DFL)
-        app.setWindowIcon(make_app_icon())
+        # For PyInstaller bundles (sys.frozen=True) the dock icon comes from the
+        # bundle's ICNS via Info.plist.  Calling setWindowIcon() here would
+        # override it with a PyQt6-created NSImage sized incorrectly by macOS.
+        # Only set the icon programmatically for source-tree runs.
+        if not getattr(sys, "frozen", False):
+            app.setWindowIcon(make_app_icon())
 
         self.window = MainWindow(
             initial_args=self.args,
@@ -856,23 +1032,36 @@ class DXSpotter:
             QTimer.singleShot(0, self._open_settings)
 
         self._count_timer = QTimer()
+
         def _tick():
             assert self.window is not None
-            self.window.update_counts(self.psk_counter, self.wsjt_counter)
+            self.window.update_counts(
+                self.psk_counter, self.wsjt_counter,
+                self.telnet1_counter, self.telnet2_counter,
+            )
             self._update_wsjt_status()
             self._update_pskr_status()
+            self._update_telnet_status()
+            self._update_commander_band()
+            self.window.set_bandmap_band(self._effective_bandmap_band())
+
         self._count_timer.timeout.connect(_tick)
         self._count_timer.start(250)
 
-        print("Connecting to MQTT server")
-        self._mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-        self._mqtt_client.on_connect    = self.on_connect
-        self._mqtt_client.on_disconnect = self.on_disconnect
-        self._mqtt_client.on_message    = self.on_message
-        self._mqtt_client.connect("mqtt.pskreporter.info", 1883, 60)
+        self._commander_poll_thread = threading.Thread(
+            target=self._commander_poll_loop,
+            daemon=True,
+            name='commander-band-poll',
+        )
+        self._commander_poll_thread.start()
 
-        print("Starting MQTT loop")
-        self._mqtt_client.loop_start()
+        self._mqtt_listener = MqttListener(
+            host='mqtt.pskreporter.info',
+            port=1883,
+            topic=self.topic,
+            on_spot=self._on_psk_spot,
+        )
+        self._mqtt_listener.start()
 
         if self.args.wsjt:
             self.wsjt_listener = WsjtxListener(
@@ -891,12 +1080,33 @@ class DXSpotter:
         else:
             self.window.set_wsjt_status("WSJT-X: disabled", ok=None)
 
+        # Start DX cluster telnet connections if configured
+        if cfg.telnet1_enabled and cfg.telnet1_host and cfg.telnet1_callsign:
+            self._telnet1 = TelnetCluster(
+                cfg.telnet1_host, cfg.telnet1_port, cfg.telnet1_callsign,
+                on_spot=lambda raw: self._on_telnet_spot(raw, 1),
+                index=1,
+            )
+            self._telnet1.start()
+        if cfg.telnet2_enabled and cfg.telnet2_host and cfg.telnet2_callsign:
+            self._telnet2 = TelnetCluster(
+                cfg.telnet2_host, cfg.telnet2_port, cfg.telnet2_callsign,
+                on_spot=lambda raw: self._on_telnet_spot(raw, 2),
+                index=2,
+            )
+            self._telnet2.start()
+
         def _save_and_cleanup():
             self._save_config()
-            self._mqtt_client.loop_stop()   # type: ignore[union-attr]
-            self._mqtt_client.disconnect()  # type: ignore[union-attr]
+            self._commander_stop_event.set()
+            if self._mqtt_listener is not None:
+                self._mqtt_listener.stop()
             if self.wsjt_listener is not None:
                 self.wsjt_listener.stop()
+            if self._telnet1 is not None:
+                self._telnet1.stop()
+            if self._telnet2 is not None:
+                self._telnet2.stop()
 
         app.aboutToQuit.connect(_save_and_cleanup)
         sys.exit(app.exec())
@@ -958,10 +1168,19 @@ class DXSpotter:
             my_grid=self.my_grid,
             rx_grid_prefixes=cfg.rx_grid_prefixes,
             wsjt_reshow_secs=cfg.wsjt_reshow_secs,
+            wsjt_no_spot_mins=cfg.wsjt_no_spot_mins,
             commander_enabled=cfg.commander_enabled,
             commander_port=cfg.commander_port,
             commander_timeout=cfg.commander_timeout,
             commander_verify_delay=cfg.commander_verify_delay,
+            telnet1_enabled=cfg.telnet1_enabled,
+            telnet1_host=cfg.telnet1_host,
+            telnet1_port=cfg.telnet1_port,
+            telnet1_callsign=cfg.telnet1_callsign,
+            telnet2_enabled=cfg.telnet2_enabled,
+            telnet2_host=cfg.telnet2_host,
+            telnet2_port=cfg.telnet2_port,
+            telnet2_callsign=cfg.telnet2_callsign,
             parent=self.window,
         )
         if dlg.exec() != SettingsDialog.DialogCode.Accepted:
@@ -973,10 +1192,56 @@ class DXSpotter:
         cfg.my_grid = dlg.my_grid
         cfg.rx_grid_prefixes = dlg.rx_grid_prefixes
         cfg.wsjt_reshow_secs = dlg.wsjt_reshow_secs
+        cfg.wsjt_no_spot_mins = dlg.wsjt_no_spot_mins
         cfg.commander_enabled = dlg.commander_enabled
         cfg.commander_port = dlg.commander_port
         cfg.commander_timeout = dlg.commander_timeout
         cfg.commander_verify_delay = dlg.commander_verify_delay
+
+        # Restart telnet clusters if any of their settings changed
+        t1_changed = (
+            cfg.telnet1_enabled != dlg.telnet1_enabled
+            or cfg.telnet1_host != dlg.telnet1_host
+            or cfg.telnet1_port != dlg.telnet1_port
+            or cfg.telnet1_callsign != dlg.telnet1_callsign
+        )
+        cfg.telnet1_enabled = dlg.telnet1_enabled
+        cfg.telnet1_host = dlg.telnet1_host
+        cfg.telnet1_port = dlg.telnet1_port
+        cfg.telnet1_callsign = dlg.telnet1_callsign
+        if t1_changed:
+            if self._telnet1 is not None:
+                self._telnet1.stop()
+            self._telnet1 = None
+            if cfg.telnet1_enabled and cfg.telnet1_host and cfg.telnet1_callsign:
+                self._telnet1 = TelnetCluster(
+                    cfg.telnet1_host, cfg.telnet1_port, cfg.telnet1_callsign,
+                    on_spot=lambda raw: self._on_telnet_spot(raw, 1),
+                    index=1,
+                )
+                self._telnet1.start()
+
+        t2_changed = (
+            cfg.telnet2_enabled != dlg.telnet2_enabled
+            or cfg.telnet2_host != dlg.telnet2_host
+            or cfg.telnet2_port != dlg.telnet2_port
+            or cfg.telnet2_callsign != dlg.telnet2_callsign
+        )
+        cfg.telnet2_enabled = dlg.telnet2_enabled
+        cfg.telnet2_host = dlg.telnet2_host
+        cfg.telnet2_port = dlg.telnet2_port
+        cfg.telnet2_callsign = dlg.telnet2_callsign
+        if t2_changed:
+            if self._telnet2 is not None:
+                self._telnet2.stop()
+            self._telnet2 = None
+            if cfg.telnet2_enabled and cfg.telnet2_host and cfg.telnet2_callsign:
+                self._telnet2 = TelnetCluster(
+                    cfg.telnet2_host, cfg.telnet2_port, cfg.telnet2_callsign,
+                    on_spot=lambda raw: self._on_telnet_spot(raw, 2),
+                    index=2,
+                )
+                self._telnet2.start()
 
         new_source = dlg.log_source
         new_adif = dlg.adif_path

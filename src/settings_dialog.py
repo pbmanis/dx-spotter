@@ -42,10 +42,19 @@ class SettingsDialog(QDialog):
                  my_grid: str = 'FM05kw',
                  rx_grid_prefixes: list[str] | None = None,
                  wsjt_reshow_secs: int = 300,
+                 wsjt_no_spot_mins: int = 2,
                  commander_enabled: bool = False,
                  commander_port: int = 52002,
                  commander_timeout: float = 0.2,
                  commander_verify_delay: float = 0.75,
+                 telnet1_enabled: bool = False,
+                 telnet1_host: str = '',
+                 telnet1_port: int = 7300,
+                 telnet1_callsign: str = '',
+                 telnet2_enabled: bool = False,
+                 telnet2_host: str = '',
+                 telnet2_port: int = 7300,
+                 telnet2_callsign: str = '',
                  parent=None) -> None:
         """Build and populate the settings dialog.
 
@@ -68,6 +77,9 @@ class SettingsDialog(QDialog):
         wsjt_reshow_secs : int, optional
             Minimum seconds between successive table entries for the same WSJT-X
             callsign.  Default is ``300``.
+        wsjt_no_spot_mins : int, optional
+            Minutes without any Decode packet before the WSJT-X status turns
+            yellow.  Default is ``2``.
         commander_enabled : bool, optional
             Whether Commander rig control is active.  Default ``False``.
         commander_port : int, optional
@@ -77,6 +89,22 @@ class SettingsDialog(QDialog):
         commander_verify_delay : float, optional
             Seconds to wait after a set command before reading back rig state.
             Default ``0.75``.
+        telnet1_enabled : bool, optional
+            Whether DX Cluster 1 is enabled.  Default ``False``.
+        telnet1_host : str, optional
+            Hostname or IP address for cluster 1.  Default ``''``.
+        telnet1_port : int, optional
+            TCP port for cluster 1.  Default ``7300``.
+        telnet1_callsign : str, optional
+            Login callsign for cluster 1.  Default ``''``.
+        telnet2_enabled : bool, optional
+            Whether DX Cluster 2 is enabled.  Default ``False``.
+        telnet2_host : str, optional
+            Hostname or IP address for cluster 2.  Default ``''``.
+        telnet2_port : int, optional
+            TCP port for cluster 2.  Default ``7300``.
+        telnet2_callsign : str, optional
+            Login callsign for cluster 2.  Default ``''``.
         parent : QWidget or None, optional
             Optional Qt parent widget.
         """
@@ -163,10 +191,16 @@ class SettingsDialog(QDialog):
         self._reshow_spin.setSuffix(" s")
         self._reshow_spin.setValue(wsjt_reshow_secs)
 
+        self._no_spot_spin = QSpinBox()
+        self._no_spot_spin.setRange(1, 60)
+        self._no_spot_spin.setSuffix(" min")
+        self._no_spot_spin.setValue(wsjt_no_spot_mins)
+
         udp_form.addRow("UDP Server Address:", self._addr_edit)
         udp_form.addRow("UDP Port:", self._port_spin)
         udp_form.addRow("Reporter Grid Prefixes:", self._rx_grid_edit)
         udp_form.addRow("Call Re-show Interval:", self._reshow_spin)
+        udp_form.addRow("No-decode warning after:", self._no_spot_spin)
 
         udp_note = QLabel(
             "Use 224.0.0.1 (multicast) so multiple apps (RUMlogNG, GridTracker…) "
@@ -213,6 +247,47 @@ class SettingsDialog(QDialog):
         cmd_note.setWordWrap(True)
         cmd_note.setStyleSheet("color: #999999; font-size: 10pt;")
 
+        # ── DX Cluster (Telnet) ───────────────────────────────────────────────
+        telnet_box = QGroupBox("DX Cluster (Telnet)")
+        telnet_layout = QVBoxLayout(telnet_box)
+
+        # Cluster 1
+        c1_box = QGroupBox("Cluster 1")
+        c1_form = QFormLayout(c1_box)
+        self._t1_enabled = QCheckBox("Enable")
+        self._t1_enabled.setChecked(telnet1_enabled)
+        self._t1_host = QLineEdit(telnet1_host)
+        self._t1_host.setPlaceholderText("e.g. dxc.k0xm.net")
+        self._t1_port = QSpinBox()
+        self._t1_port.setRange(1, 65535)
+        self._t1_port.setValue(telnet1_port)
+        self._t1_call = QLineEdit(telnet1_callsign.upper())
+        self._t1_call.setPlaceholderText("Your callsign")
+        c1_form.addRow("", self._t1_enabled)
+        c1_form.addRow("Host:", self._t1_host)
+        c1_form.addRow("Port:", self._t1_port)
+        c1_form.addRow("Callsign:", self._t1_call)
+
+        # Cluster 2
+        c2_box = QGroupBox("Cluster 2")
+        c2_form = QFormLayout(c2_box)
+        self._t2_enabled = QCheckBox("Enable")
+        self._t2_enabled.setChecked(telnet2_enabled)
+        self._t2_host = QLineEdit(telnet2_host)
+        self._t2_host.setPlaceholderText("e.g. dxc.w3lpl.net")
+        self._t2_port = QSpinBox()
+        self._t2_port.setRange(1, 65535)
+        self._t2_port.setValue(telnet2_port)
+        self._t2_call = QLineEdit(telnet2_callsign.upper())
+        self._t2_call.setPlaceholderText("Your callsign")
+        c2_form.addRow("", self._t2_enabled)
+        c2_form.addRow("Host:", self._t2_host)
+        c2_form.addRow("Port:", self._t2_port)
+        c2_form.addRow("Callsign:", self._t2_call)
+
+        telnet_layout.addWidget(c1_box)
+        telnet_layout.addWidget(c2_box)
+
         # ── buttons ───────────────────────────────────────────────────────────
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -226,6 +301,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(udp_note)
         layout.addWidget(cmd_box)
         layout.addWidget(cmd_note)
+        layout.addWidget(telnet_box)
         layout.addStretch()
         layout.addWidget(buttons)
 
@@ -285,6 +361,11 @@ class SettingsDialog(QDialog):
         return self._reshow_spin.value()
 
     @property
+    def wsjt_no_spot_mins(self) -> int:
+        """Minutes without a Decode packet before the WSJT-X status indicator turns yellow."""
+        return self._no_spot_spin.value()
+
+    @property
     def commander_enabled(self) -> bool:
         """Whether Commander rig control is enabled."""
         return self._cmd_enabled.isChecked()
@@ -303,3 +384,43 @@ class SettingsDialog(QDialog):
     def commander_verify_delay(self) -> float:
         """Seconds to wait after a set command before reading back rig state."""
         return self._cmd_delay_spin.value()
+
+    @property
+    def telnet1_enabled(self) -> bool:
+        """Whether DX Cluster 1 is enabled."""
+        return self._t1_enabled.isChecked()
+
+    @property
+    def telnet1_host(self) -> str:
+        """Hostname or IP address for DX Cluster 1."""
+        return self._t1_host.text().strip()
+
+    @property
+    def telnet1_port(self) -> int:
+        """TCP port for DX Cluster 1."""
+        return self._t1_port.value()
+
+    @property
+    def telnet1_callsign(self) -> str:
+        """Login callsign for DX Cluster 1 (stripped, upper-case)."""
+        return self._t1_call.text().strip().upper()
+
+    @property
+    def telnet2_enabled(self) -> bool:
+        """Whether DX Cluster 2 is enabled."""
+        return self._t2_enabled.isChecked()
+
+    @property
+    def telnet2_host(self) -> str:
+        """Hostname or IP address for DX Cluster 2."""
+        return self._t2_host.text().strip()
+
+    @property
+    def telnet2_port(self) -> int:
+        """TCP port for DX Cluster 2."""
+        return self._t2_port.value()
+
+    @property
+    def telnet2_callsign(self) -> str:
+        """Login callsign for DX Cluster 2 (stripped, upper-case)."""
+        return self._t2_call.text().strip().upper()

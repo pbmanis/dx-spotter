@@ -89,6 +89,14 @@ class ADIFLog:
         Maps ``dxcc → set of upper-case mode strings`` with confirmed QSOs.
     _worked_modes : dict[int, set[str]]
         Maps ``dxcc → set of upper-case mode strings`` with worked QSOs.
+    _was_confirmed : dict[str, set[str]]
+        Maps upper-case band → set of US state abbreviations with at least one
+        confirmed QSO on that band.
+    _was_worked : dict[str, set[str]]
+        Maps upper-case band → set of US state abbreviations worked on that band
+        (confirmed or not).
+    _call_state : dict[str, str]
+        Maps upper-case callsign → US state abbreviation (any band/mode).
     """
 
     def __init__(self, filepath: str) -> None:
@@ -115,6 +123,9 @@ class ADIFLog:
         self._worked_bands: dict[int, set[str]] = {}
         self._confirmed_modes: dict[int, set[str]] = {}
         self._worked_modes: dict[int, set[str]] = {}
+        self._was_confirmed: dict[str, set[str]] = {}
+        self._was_worked: dict[str, set[str]] = {}
+        self._call_state: dict[str, str] = {}
         self._load(filepath)
 
     @property
@@ -142,7 +153,7 @@ class ADIFLog:
 
         Used by the spot table to detect when a 5BD band already has ≥ 100
         confirmed entities, at which point new spots for that band are
-        coloured ``'over100'`` (cyan) instead of the standard ``'new'`` (red).
+        colored ``'over100'`` (cyan) instead of the standard ``'new'`` (red).
 
         Parameters
         ----------
@@ -193,6 +204,9 @@ class ADIFLog:
         obj._worked_bands = {}
         obj._confirmed_modes = {}
         obj._worked_modes = {}
+        obj._was_confirmed = {}
+        obj._was_worked = {}
+        obj._call_state = {}
         obj._load_rumlogng(Path(db_path))
         return obj
 
@@ -212,7 +226,7 @@ class ADIFLog:
 
         try:
             cur = con.execute(
-                "SELECT ZCALLSIGN, ZBAND, ZMODE, ZDXCCADIF, ZQSL, ZLOTWQSL, ZDATETIME "
+                "SELECT ZCALLSIGN, ZBAND, ZMODE, ZDXCCADIF, ZQSL, ZLOTWQSL, ZDATETIME, ZSTATE "
                 "FROM ZCORE_QSO "
                 "WHERE ZCALLSIGN IS NOT NULL AND ZBAND IS NOT NULL AND ZMODE IS NOT NULL"
             )
@@ -224,7 +238,7 @@ class ADIFLog:
         finally:
             con.close()
 
-        for call, band_raw, mode_raw, dxcc_raw, qsl, lotw, cf_ts in rows:
+        for call, band_raw, mode_raw, dxcc_raw, qsl, lotw, cf_ts, state_raw in rows:
             try:
                 dxcc = int(dxcc_raw)
             except (TypeError, ValueError):
@@ -267,6 +281,14 @@ class ADIFLog:
                 self._worked_details.setdefault(key, []).append(
                     {'call': call, 'date': date_str}
                 )
+
+            state = (state_raw or '').upper().strip()
+            if dxcc == 291 and state:
+                self._call_state[call.upper()] = state
+                self._was_worked.setdefault(band, set()).add(state)
+                if confirmed:
+                    self._was_confirmed.setdefault(band, set()).add(state)
+
             self._total_qsos += 1
 
         print(f"RumLogNG: {self._total_qsos} QSOs loaded, "
@@ -344,6 +366,14 @@ class ADIFLog:
                     'call': call,
                     'date': rec.get('QSO_DATE', ''),
                 })
+
+            state = rec.get('STATE', '').upper().strip()
+            if dxcc == 291 and state:
+                self._call_state[call.upper()] = state
+                self._was_worked.setdefault(band, set()).add(state)
+                if lotw_ok or paper_ok:
+                    self._was_confirmed.setdefault(band, set()).add(state)
+
             self._total_qsos += 1
 
         print(f"ADIF: {self._total_qsos} QSOs loaded, "
@@ -509,8 +539,8 @@ class ADIFLog:
     def mode_matches_criterion(mode: str, criterion: str) -> bool:
         """Return ``True`` if a spot with this mode is relevant for the award criterion.
 
-        Used by the spot table to decide whether to colour a row with award
-        status colours or dim it as ``'n/a'`` before calling
+        Used by the spot table to decide whether to color a row with award
+        status colors or dim it as ``'n/a'`` before calling
         :meth:`award_status`.
 
         Parameters
@@ -655,3 +685,53 @@ class ADIFLog:
             the given band, regardless of mode.
         """
         return band.upper() in self._confirmed_bands.get(dxcc, set())
+
+    def call_state(self, call: str) -> str:
+        """Return the US state for a callsign, or ``''`` if unknown.
+
+        The state is sourced from any US contact in the log regardless of band.
+
+        Parameters
+        ----------
+        call : str
+            Amateur radio callsign (case-insensitive).
+
+        Returns
+        -------
+        str
+            Two-letter US state abbreviation (e.g. ``'OH'``, ``'FL'``), or an
+            empty string when the callsign has no US state recorded in the log.
+        """
+        return self._call_state.get(call.upper(), '')
+
+    def was_status(self, state: str, band: str) -> str:
+        """Return the WAS award status for a US state on a given band.
+
+        Parameters
+        ----------
+        state : str
+            Two-letter US state abbreviation (case-insensitive, e.g. ``'OH'``).
+            An empty string returns ``'n/a'``.
+        band : str
+            Band string (case-insensitive, e.g. ``'6m'`` or ``'20m'``).
+
+        Returns
+        -------
+        str
+            One of:
+
+            * ``'confirmed'`` — at least one QSL-confirmed QSO with a station
+              from this state on this band.
+            * ``'worked'``    — QSO in log on this band but no confirmed QSL.
+            * ``'new'``       — state never worked on this band.
+            * ``'n/a'``       — state is empty or unknown.
+        """
+        if not state:
+            return 'n/a'
+        s = state.upper()
+        b = band.upper()
+        if s in self._was_confirmed.get(b, set()):
+            return 'confirmed'
+        if s in self._was_worked.get(b, set()):
+            return 'worked'
+        return 'new'

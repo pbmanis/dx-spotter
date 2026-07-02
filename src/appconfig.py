@@ -65,7 +65,7 @@ class AppConfig:
     wsjt_port : int
         UDP port on which to listen for WSJT-X packets (default ``2237``).
     criterion : str
-        The DXCC award criterion used to colour the QSL column.  One of
+        The DXCC award criterion used to color the QSL column.  One of
         ``'5bd'``, ``'cw'``, ``'mixed'``, ``'digital'``, ``'ssb'``, ``'6m'``.
     display_filter : str
         Row visibility filter: ``'all'``, ``'dxcc_only'``, or
@@ -91,6 +91,22 @@ class AppConfig:
         TCP port Commander listens on.  Commander's documented default is
         ``52002`` (configured port block base + 2).  Some installations use a
         different port; check Commander's configuration.
+    telnet1_enabled : bool
+        Whether DX Cluster connection 1 is enabled on startup.
+    telnet1_host : str
+        Hostname or IP address of DX Cluster node 1.
+    telnet1_port : int
+        TCP port for DX Cluster node 1 (common value: ``7300``).
+    telnet1_callsign : str
+        Operator callsign sent as a login credential to cluster 1.
+    telnet2_enabled : bool
+        Whether DX Cluster connection 2 is enabled on startup.
+    telnet2_host : str
+        Hostname or IP address of DX Cluster node 2.
+    telnet2_port : int
+        TCP port for DX Cluster node 2 (common value: ``7300``).
+    telnet2_callsign : str
+        Operator callsign sent as a login credential to cluster 2.
     """
 
     udp_address: str = '224.0.0.1'
@@ -111,11 +127,20 @@ class AppConfig:
         default_factory=lambda: ["FM", "FN", "FL", "EL", "EN", "EM"]
     )
     wsjt_reshow_secs: int = 300
+    wsjt_no_spot_mins: int = 2
     commander_enabled: bool = False
     commander_host: str = '127.0.0.1'
     commander_port: int = 52002
     commander_timeout: float = 0.2
     commander_verify_delay: float = 0.75
+    telnet1_enabled: bool = False
+    telnet1_host: str = ''
+    telnet1_port: int = 7300
+    telnet1_callsign: str = ''
+    telnet2_enabled: bool = False
+    telnet2_host: str = ''
+    telnet2_port: int = 7300
+    telnet2_callsign: str = ''
 
 
 def config_path() -> Path:
@@ -143,7 +168,7 @@ def load_config() -> AppConfig:
     """Load the DXSpotter configuration from the platform config file.
 
     If the file does not exist or cannot be parsed, a default :class:`AppConfig`
-    is returned without raising an exception.  Unrecognised keys are silently
+    is returned without raising an exception.  Unrecognized keys are silently
     ignored; missing keys fall back to the dataclass defaults.
 
     Returns
@@ -184,6 +209,7 @@ def load_config() -> AppConfig:
     if isinstance(raw_prefixes, list):
         cfg.rx_grid_prefixes = [str(p).upper() for p in raw_prefixes]
     cfg.wsjt_reshow_secs = int(filt.get('wsjt_reshow_secs', cfg.wsjt_reshow_secs))
+    cfg.wsjt_no_spot_mins = int(filt.get('wsjt_no_spot_mins', cfg.wsjt_no_spot_mins))
 
     ui = data.get('ui', {})
     cfg.criterion = str(ui.get('criterion', cfg.criterion))
@@ -195,6 +221,18 @@ def load_config() -> AppConfig:
     cfg.commander_port = int(rig.get('commander_port', cfg.commander_port))
     cfg.commander_timeout = float(rig.get('commander_timeout', cfg.commander_timeout))
     cfg.commander_verify_delay = float(rig.get('commander_verify_delay', cfg.commander_verify_delay))
+
+    telnet = data.get('telnet', {})
+    t1 = telnet.get('cluster1', {})
+    cfg.telnet1_enabled = bool(t1.get('enabled', cfg.telnet1_enabled))
+    cfg.telnet1_host = str(t1.get('host', cfg.telnet1_host))
+    cfg.telnet1_port = int(t1.get('port', cfg.telnet1_port))
+    cfg.telnet1_callsign = str(t1.get('callsign', cfg.telnet1_callsign))
+    t2 = telnet.get('cluster2', {})
+    cfg.telnet2_enabled = bool(t2.get('enabled', cfg.telnet2_enabled))
+    cfg.telnet2_host = str(t2.get('host', cfg.telnet2_host))
+    cfg.telnet2_port = int(t2.get('port', cfg.telnet2_port))
+    cfg.telnet2_callsign = str(t2.get('callsign', cfg.telnet2_callsign))
 
     return cfg
 
@@ -209,7 +247,7 @@ def save_config(cfg: AppConfig) -> None:
     Parameters
     ----------
     cfg : AppConfig
-        Current application configuration to serialise.
+        Current application configuration to serialize.
     """
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -235,6 +273,7 @@ wsjt_enabled       = {"true" if cfg.wsjt_enabled else "false"}
 wsjt_port          = {cfg.wsjt_port}
 rx_grid_prefixes   = [{", ".join(f'"{p}"' for p in cfg.rx_grid_prefixes)}]
 wsjt_reshow_secs   = {cfg.wsjt_reshow_secs}
+wsjt_no_spot_mins  = {cfg.wsjt_no_spot_mins}
 
 [ui]
 criterion      = "{cfg.criterion}"
@@ -246,5 +285,17 @@ commander_host         = "{cfg.commander_host}"
 commander_port         = {cfg.commander_port}
 commander_timeout      = {cfg.commander_timeout}
 commander_verify_delay = {cfg.commander_verify_delay}
+
+[telnet.cluster1]
+enabled  = {"true" if cfg.telnet1_enabled else "false"}
+host     = "{cfg.telnet1_host}"
+port     = {cfg.telnet1_port}
+callsign = "{cfg.telnet1_callsign}"
+
+[telnet.cluster2]
+enabled  = {"true" if cfg.telnet2_enabled else "false"}
+host     = "{cfg.telnet2_host}"
+port     = {cfg.telnet2_port}
+callsign = "{cfg.telnet2_callsign}"
 """
     path.write_text(content, encoding='utf-8')
