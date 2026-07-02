@@ -4,7 +4,7 @@ Installation and Usage
 Requirements
 ------------
 
-* Python 3.11 or later
+* Python 3.13 or later
 * PyQt6
 * pyqtgraph
 * paho-mqtt >= 2.0
@@ -139,7 +139,7 @@ The main window is divided into two docks:
      Max Range, and Max Spot Age controls.  Changes take effect immediately.
    * **ADIF Log** parameter group — File picker for the ADIF export file.
    * **Display** parameter group — Terminal Output toggle.
-   * **Award Criteria** radio group — selects which DXCC award colours the
+   * **Award Criteria** radio group — selects which DXCC award colors the
      QSL column.  See :doc:`display`.
    * **Display Filter** radio group — hides/shows rows based on DXCC status.
    * **Reports** panel — live counts of PSK Reporter spots, WSJT-X spots,
@@ -151,30 +151,57 @@ The main window is divided into two docks:
 
 **Right dock — Spot table**
    Displays all received spots.  See :doc:`display` for column descriptions
-   and colour coding.
+   and color coding.
 
 Status bar
 ~~~~~~~~~~
 
-The bottom status bar contains three fields:
+The bottom status bar contains the following fields (left to right):
 
 * **Left** — log source summary: file name, total QSOs, and confirmed DXCC
   count (LoTW + paper).
-* **Centre** — ``PSKR: connected`` / ``PSKR: connecting…`` (green / grey).
-* **Right** — ``WSJT-X: connected`` / ``WSJT-X: waiting…`` /
-  ``WSJT-X: no signal (Xs)`` / ``WSJT-X: disabled``.
+* **T1 / T2** — telnet DX Cluster connection state for cluster 1 and cluster 2:
+
+  * Green ``T1: connected`` — cluster is connected.
+  * Orange ``T1: connecting…`` — connection in progress or reconnecting.
+  * Grey ``T1: off`` — cluster is disabled in settings.
+
+* **PSKR** — PSK Reporter MQTT connection: green ``PSKR: connected`` or
+  grey ``PSKR: connecting…``.
+* **WSJT-X** — WSJT-X listener state (three colors):
+
+  * Green ``WSJT-X: connected`` — heartbeat active and decodes are arriving.
+  * Yellow ``WSJT-X: no decodes`` — heartbeat active but no decode packets
+    received in the last *N* minutes (configurable; see
+    :option:`wsjt_no_spot_mins`).
+  * Red ``WSJT-X: no signal (Xs)`` — no heartbeat received in the last 45 s.
+  * Grey ``WSJT-X: waiting…`` — listener active but no heartbeat received yet.
 
 Interacting with spots
 ~~~~~~~~~~~~~~~~~~~~~~
 
 * **Single click** on a row — bolds the row and all other rows for the same
   callsign; click elsewhere to deselect.
-* **Double click** on a row — if the spot is an FT8/FT4/FT2 mode spot and
-  the WSJT-X listener is active, sends a Configure + Reply command to WSJT-X
-  to point it at that station.
+* **Double click** on a digital (FT8/FT4/FT2) row — if the WSJT-X listener
+  is active:
+
+  1. Sends a Configure + Reply command to WSJT-X to point it at that station.
+  2. If DX Lab Commander is enabled, simultaneously QSYs the radio to the
+     standard FT8/FT4/FT2 dial frequency for the spot's band in ``DATA-U``
+     mode.
+
+  If the station is not currently visible in WSJT-X's band-activity window,
+  a confirmation dialog asks whether to send the spot anyway.
+
+* **Double click** on a CW or SSB row — if DX Lab Commander is enabled, QSYs
+  the radio to the spot's frequency and sets the appropriate mode (``CW``,
+  ``USB``, or ``LSB``).
 * **Right click** on the QSL column cell — opens a context menu showing all
   confirmed and worked QSOs for that DXCC entity under the active award
   criterion.
+
+The same double-click actions apply when clicking a spot line in the
+**Band Map** (see `Band map`_ below).
 
 WSJT-X integration
 -------------------
@@ -188,8 +215,77 @@ When ``--wsjt`` is active, DX Spotter:
    registered.
 3. Receives Decode (type 2) packets and forwards CQ spots to the spot table
    (subject to the decode filter and the 5-minute rate-limiting gate).
-4. On double-click: sends Configure (type 15) to set the DX call and Rx DF,
+4. Tracks the most recent decode per callsign for use in double-click Reply,
+   regardless of the rate-limiting gate.
+5. On double-click: sends Configure (type 15) to set the DX call and Rx DF,
    then sends Reply (type 4) to simulate a band-activity double-click.
 
 WSJT-X must have **Accept UDP requests** enabled in
 Settings → Reporting for double-click reply to work.
+
+The WSJT-X status indicator in the status bar uses three colors:
+
+* **Green** — heartbeat received and decodes arriving within the last
+  *N* minutes (see :option:`wsjt_no_spot_mins`).
+* **Yellow** — heartbeat received but no decodes recently.  WSJT-X is
+  running and connected but nothing is being heard on the band.
+* **Red** — no heartbeat in the last 45 s; WSJT-X is likely not running
+  or the UDP address/port is misconfigured.
+
+DX Lab Commander rig control
+-----------------------------
+
+When **Commander** is enabled in the Rig Control section of the Settings
+dialog, double-clicking a spot also commands the radio via DX Lab Suite's
+Commander application:
+
+* **Digital spots (FT8/FT4/FT2)** — radio is set to the standard dial
+  frequency for the band/mode and switched to ``DATA-U`` (USB digital)
+  mode.
+* **CW spots** — radio is set to the spot frequency in ``CW`` mode.
+* **SSB spots** — radio is set to the spot frequency in ``USB`` or
+  ``LSB`` mode (automatic selection based on whether the frequency is
+  above or below 10 MHz).
+
+Commander must be running on the same machine (or reachable at the
+configured host/port) for rig control to work.  If Commander is not
+reachable, the double-click still sends the spot to WSJT-X for digital
+modes but the radio is not moved.  See :doc:`configuration` for Commander
+network settings.
+
+Band map
+--------
+
+The band map is displayed in the right portion of the window alongside the
+spot table.  It shows all visible spots for the current band as vertical
+lines on a frequency-vs-SNR plot.
+
+* **X-axis** — absolute frequency in kHz.
+* **Y-axis** — SNR in dB (positive values extend upward; FT8 values are
+  typically −10 to +10 dB).
+* **Line color** — matches the mode: blue = FT8, light blue = FT4, cyan = FT2,
+  green = CW, magenta = SSB.
+* **Line width** — thin (1 px) for ``n/a`` award status; thick (3 px) when the
+  spot has award value (new, worked, or confirmed).
+* **Label** — callsign printed vertically at the top of each line.
+
+Mode zoom buttons
+~~~~~~~~~~~~~~~~~
+
+Four buttons above the plot control the x-axis zoom:
+
+* **All** — restores auto-range to show the full band.
+* **CW** — zooms to the CW sub-band for the current band.
+* **FT** — zooms to the FT8 sub-band (dial frequency ± ~4 kHz for 10 m and 15 m;
+  wider on other bands to include FT4 and FT2 segments).
+* **SSB** — zooms to the SSB segment.  Disabled on WARC bands (30 m, 17 m, 12 m)
+  which have no SSB allocation in the band plan.
+
+Double-clicking in the band map
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Double-clicking near a spot line fires the same routing logic as double-clicking
+the corresponding row in the spot table: digital spots are sent to WSJT-X and
+(if Commander is enabled) the radio is QSYed; CW/SSB spots QSY via Commander
+only.  A 10-pixel click tolerance is applied so you do not need to hit the line
+exactly.

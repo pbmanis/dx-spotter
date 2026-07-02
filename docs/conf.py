@@ -9,9 +9,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from version import __version__  # noqa: E402
 
 project = "DX Spotter"
-author = r"\normalfont\small \hfill \begin{tabular}{r} Concept, Design, Debugging, Testing: Paul B. Manis (NC3G)"
-author += r" \\ \small Implementation: Claude Code, powered by Claude Sonnet 4.6 (model ID: claude-sonnet-4-6)."
-author += r" \\ \small PSK Reporter MQTT reading code: Petr Kracik (OK1RP)  \end{tabular}"
+author = r"\normalfont\small \hfill \begin{tabular}{r} NC3G"
+author += r" \\ \small Implementation: Claude Code, powered by Claude Sonnet 4.6"
 copyright = "2024-2026, Paul Manis"
 license = "MIT License"
 release = __version__
@@ -53,6 +52,7 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 # -- HTML output ---------------------------------------------------------------
 html_theme = "furo"
+html_theme_options = {}
 html_static_path = ["_static"]
 html_title = "DX Spotter"
 

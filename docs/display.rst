@@ -1,4 +1,4 @@
-Spot Table: Columns, Colours, and Filters
+Spot Table: Columns, Colors, and Filters
 ==========================================
 
 Spot table columns
@@ -49,7 +49,8 @@ The spot table has the following columns (left to right):
      - Amateur band (e.g. ``20m``, ``40m``).
    * - **Src**
      - Spot source: ``psk`` = PSK Reporter; ``wsjt`` = WSJT-X local decode
-       (shown in italic font).
+       (shown in italic font); ``t1`` / ``t2`` = DX Cluster telnet connection
+       1 or 2.
    * - **Reporter**
      - Callsign of the PSK Reporter station that heard the DX station.  For
        WSJT-X spots this is your own callsign (or ``WSJT-X`` if no callsign
@@ -61,19 +62,19 @@ The spot table has the following columns (left to right):
        Reporter reporting station.  For WSJT-X spots this is ``0`` (the
        range filter does not apply to locally decoded signals).
    * - **QSL**
-     - Award status cell — see `Award colour scheme`_ below.
+     - Award status cell — see `Award color scheme`_ below.
 
-Award colour scheme
+Award color scheme
 -------------------
 
-Every row is coloured according to the active **Award Criterion** (selected in
+Every row is colored according to the active **Award Criterion** (selected in
 the left panel) and the DXCC award status of the spotted entity.
 
 .. list-table::
    :header-rows: 1
    :widths: 15 20 65
 
-   * - Colour
+   * - Color
      - Status
      - Meaning
    * - Dark red background, white text
@@ -89,12 +90,12 @@ the left panel) and the DXCC award status of the spotted entity.
    * - Same grey background, dim text
      - **n/a**
      - The spot's mode cannot contribute to the active criterion (e.g. an
-       FT8 spot against the CW criterion).  Row is de-emphasised.
+       FT8 spot against the CW criterion).  Row is de-emphasized.
    * - Dark teal background, cyan text
      - **Over 100** (5BD only)
      - The band already has ≥ 100 confirmed DXCC entities, so the 5-Band DXCC
        award requirement for this band is already met.  The spot is still
-       shown but de-prioritised relative to bands with fewer than 100.
+       shown but de-priortized relative to bands with fewer than 100.
 
 The **QSL column** also displays a brief text label:
 
@@ -127,11 +128,11 @@ the left panel.
      - Description
    * - **5 Band DXCC**
      - Requires 100 confirmed entities on each of the five classic HF bands:
-       80 m, 40 m, 20 m, 15 m, 10 m.  The colour is per-band: a spot on 20 m
+       80 m, 40 m, 20 m, 15 m, 10 m.  The color is per-band: a spot on 20 m
        is compared only against 20 m confirmed/worked entities.  Spots on
        other bands (e.g. 17 m) show as **New** since they do not contribute.
        When a band reaches ≥ 100 confirmed entities the ``over100`` (cyan)
-       colour is used.
+       color is used.
    * - **DXCC CW**
      - Considers only CW QSOs.  FT8 / SSB spots are marked **n/a**.
    * - **DXCC Mixed**
@@ -172,8 +173,22 @@ Row font styles
 * **Italic** — WSJT-X locally decoded spot.
 * **Bold** — currently selected callsign (single-click to select).
 * **Bold italic** — selected WSJT-X spot.
-* **Dimmed colours** — the spotted station has entered a QSO (moved from CQ
+* **Dimmed colors** — the spotted station has entered a QSO (moved from CQ
   to working another station); detected from WSJT-X decode traffic.
+
+Band map display
+----------------
+
+The band map renders spots for the current band as vertical lines on a
+frequency-vs-SNR plot.  Line color encodes mode (blue = FT8, light blue = FT4,
+cyan = FT2, green = CW, magenta = SSB); line width encodes award value (thin = n/a,
+thick = any other status).  The same display filter, award criterion, and spot-age
+expiry that apply to the table also apply to the band map.
+
+Four mode-zoom buttons (**All / CW / FT / SSB**) above the plot snap the x-axis
+to the relevant sub-band.  The **SSB** button is disabled on WARC bands (30 m,
+17 m, 12 m) which have no SSB allocation.  Double-clicking near a spot line fires
+the same action as double-clicking the row in the spot table.
 
 Spot deduplication and update
 ------------------------------

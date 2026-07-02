@@ -1,0 +1,12 @@
+{% extends "!base.html" %}
+{#
+  Override Furo's theme-initialisation block to default to dark mode when
+  the visitor has no stored preference (instead of Furo's default "auto").
+  The stored preference (set by the theme toggle button) still takes effect,
+  so a visitor who explicitly switches to light mode keeps that choice.
+#}
+{% block body %}
+<script>
+  document.body.dataset.theme = localStorage.getItem("theme") || "dark";
+</script>
+{% endblock %}
