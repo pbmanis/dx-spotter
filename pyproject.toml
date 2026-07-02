@@ -7,7 +7,7 @@ packages = ["src/tools"]
 
 [project]
 name = "dx-spotter"
-version = "0.1.0"
+version = "0.2.0"
 description = "program to collect spots from psk reporter and wsjt-x, and display them in a nice way, with comparisons to an adif log file"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -40,4 +40,5 @@ dev = [
     "pytest>=9.1.1",
     "sphinx>=8.0",
     "sphinx-autodoc-typehints>=3.11.0",
+    "sphinx-rtd-theme>=3.1.0",
 ]
