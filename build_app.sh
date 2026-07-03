@@ -60,10 +60,21 @@ fi
 echo "    Python:      $("$PYTHON" --version)"
 echo "    pyinstaller: $("$PYI" --version)"
 
-echo "=== Step 3: Clean previous build artifacts ==="
+echo "=== Step 3: Download fresh CTY country file ==="
+mkdir -p "$PROJECT_ROOT/src/data"
+"$PYTHON" -c "
+import urllib.request, sys
+url = 'https://www.country-files.com/cty/cty.plist'
+dest = sys.argv[1]
+print('    Downloading', url)
+urllib.request.urlretrieve(url, dest)
+print('    Saved:', dest)
+" "$PROJECT_ROOT/src/data/cty.plist"
+
+echo "=== Step 4: Clean previous build artifacts ==="
 rm -rf "$PROJECT_ROOT/build" "$PROJECT_ROOT/dist"
 
-echo "=== Step 4: Build .app bundle ==="
+echo "=== Step 5: Build .app bundle ==="
 "$PYI" "$PROJECT_ROOT/dx-spotter.spec" \
     --distpath "$PROJECT_ROOT/dist" \
     --workpath "$PROJECT_ROOT/build" \

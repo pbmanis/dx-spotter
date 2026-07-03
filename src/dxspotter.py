@@ -1,7 +1,7 @@
 """Main controller for DX Spotter.
 
 This module wires together the MQTT connection to PSK Reporter, the optional
-WSJT-X UDP listener, the Qt GUI (:class:`~main_window.MainWindow`), and the
+WSJT-X UDP listener, two telnet cluster connections, the Qt GUI (:class:`~main_window.MainWindow`), and the
 ADIF / RumLogNG contact log.  Application entry point is :func:`main`.
 """
 import argparse
@@ -19,7 +19,9 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from adif_log import ADIFLog
 from appconfig import AppConfig, config_path, load_config, save_config
+from callsign_corrections import correct_entity
 from commander_client import CommanderClient, is_available as commander_available
+import cty_cache
 from main_window import MainWindow, make_app_icon
 from mqtt_listener import MqttListener
 from settings_dialog import SettingsDialog
@@ -47,7 +49,7 @@ class DXSpotter:
     """Top-level application controller for DX Spotter.
 
     Owns the MQTT client (PSK Reporter), an optional :class:`~wsjtx_listener.WsjtxListener`
-    (WSJT-X UDP), the :class:`~main_window.MainWindow` Qt window, and the loaded
+    (WSJT-X UDP), two telnet cluster connections, the :class:`~main_window.MainWindow` Qt window, and the loaded
     :class:`~adif_log.ADIFLog`.  Coordinates data flow between all components:
 
     * Incoming PSK Reporter MQTT messages are decoded in :meth:`on_message` and
@@ -55,8 +57,10 @@ class DXSpotter:
     * Incoming WSJT-X decodes arrive on a background thread via
       :meth:`_on_wsjt_spot` and are forwarded to the same signal.
     * Settings changes from the GUI are applied live in :meth:`_apply_settings`.
-    * Double-clicks on the spot table trigger :meth:`_on_spot_activated`, which
-      sends a Reply / Configure message back to WSJT-X.
+    * Double-clicks on the spot table trigger :meth:`_on_spot_activated`, depending
+      on the mode, these are sent to:
+        - FT8/FT4/FT2: sends a Reply / Configure message back to WSJT-X.
+        - CW, SSB: Sends a command to RumLogNG to set the radio frequency and mode.
 
     Attributes
     ----------
@@ -198,8 +202,15 @@ class DXSpotter:
             Country or territory name (e.g. ``'United States'``), or
             ``'Unknown'`` when the callsign cannot be resolved.
         """
+        if self.cinfo is None:
+            return "Unknown"
         try:
-            return self.cinfo.get_country_name(call)  # type: ignore[union-attr]
+            if self.cinfo.check_if_mm(call):
+                return "Maritime Mobile"
+            if self.cinfo.check_if_am(call):
+                return "Aeronautical Mobile"
+            info = self.cinfo.get_all(call)
+            return correct_entity(call, info).get("country", "Unknown")
         except Exception:
             return "Unknown"
 
@@ -216,8 +227,13 @@ class DXSpotter:
         int
             ADIF DXCC entity number, or ``-1`` when the lookup fails.
         """
+        if self.cinfo is None:
+            return -1
         try:
-            return self.cinfo.get_all(call)['adif']  # type: ignore[union-attr]
+            if self.cinfo.check_if_mm(call) or self.cinfo.check_if_am(call):
+                return -1
+            info = self.cinfo.get_all(call)
+            return correct_entity(call, info)["adif"]
         except Exception:
             return -1
 
@@ -987,7 +1003,8 @@ class DXSpotter:
         print(self.args)
 
         print("Loading lookup directory")
-        lookuplib = LookupLib(lookuptype="countryfile", filename=self.args.cty_plist)
+        cty_path = self.args.cty_plist or str(cty_cache.ensure_cty())
+        lookuplib = LookupLib(lookuptype="countryfile", filename=cty_path)
         self.cinfo = Callinfo(lookuplib)
 
         if self.args.call is not None:
@@ -1167,6 +1184,13 @@ class DXSpotter:
         src = 'RumLogNG' if cfg.log_source == 'rumlogng' else cfg.adif_path
         print(f"Log reloaded: {src}")
 
+    def _reinit_cinfo(self) -> None:
+        # Reload LookupLib from the (just-refreshed) cache file.
+        cty_path = str(cty_cache.cty_plist_path())
+        lookuplib = LookupLib(lookuptype="countryfile", filename=cty_path)
+        self.cinfo = Callinfo(lookuplib)
+        print(f"CTY reloaded: {cty_path}")
+
     def _open_settings(self) -> None:
         """Open the Settings dialog; apply changes immediately where possible."""
         if self.window is None:
@@ -1193,10 +1217,14 @@ class DXSpotter:
             telnet2_host=cfg.telnet2_host,
             telnet2_port=cfg.telnet2_port,
             telnet2_callsign=cfg.telnet2_callsign,
+            cty_path=str(cty_cache.cty_plist_path()),
             parent=self.window,
         )
         if dlg.exec() != SettingsDialog.DialogCode.Accepted:
             return
+
+        if dlg.cty_refreshed:
+            self._reinit_cinfo()
 
         cfg.udp_address = dlg.udp_address
         cfg.udp_port = dlg.udp_port

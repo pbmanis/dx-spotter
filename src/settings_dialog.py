@@ -12,9 +12,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
-    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QRadioButton, QSpinBox, QVBoxLayout, QButtonGroup,
+    QApplication, QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+    QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+    QMessageBox, QPushButton, QRadioButton, QSpinBox, QVBoxLayout, QButtonGroup,
 )
 
 from adif_log import RUMLOGNG_DB_PATH
@@ -55,6 +55,7 @@ class SettingsDialog(QDialog):
                  telnet2_host: str = '',
                  telnet2_port: int = 7300,
                  telnet2_callsign: str = '',
+                 cty_path: str = '',
                  parent=None) -> None:
         """Build and populate the settings dialog.
 
@@ -105,6 +106,9 @@ class SettingsDialog(QDialog):
             TCP port for cluster 2.  Default ``7300``.
         telnet2_callsign : str, optional
             Login callsign for cluster 2.  Default ``''``.
+        cty_path : str, optional
+            Path to the current cached CTY plist file (used only for display).
+            Default ``''``.
         parent : QWidget or None, optional
             Optional Qt parent widget.
         """
@@ -247,6 +251,17 @@ class SettingsDialog(QDialog):
         cmd_note.setWordWrap(True)
         cmd_note.setStyleSheet("color: #999999; font-size: 10pt;")
 
+        # ── Country Lookup File (CTY) ─────────────────────────────────────────
+        self._cty_refreshed: bool = False
+        cty_box = QGroupBox("Country Lookup File (CTY)")
+        cty_layout = QVBoxLayout(cty_box)
+        self._cty_status_label = QLabel()
+        self._cty_refresh_btn = QPushButton("Refresh CTY…")
+        self._cty_refresh_btn.clicked.connect(self._refresh_cty)
+        cty_layout.addWidget(self._cty_status_label)
+        cty_layout.addWidget(self._cty_refresh_btn)
+        self._update_cty_label()
+
         # ── DX Cluster (Telnet) ───────────────────────────────────────────────
         telnet_box = QGroupBox("DX Cluster (Telnet)")
         telnet_layout = QVBoxLayout(telnet_box)
@@ -301,6 +316,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(udp_note)
         layout.addWidget(cmd_box)
         layout.addWidget(cmd_note)
+        layout.addWidget(cty_box)
         layout.addWidget(telnet_box)
         layout.addStretch()
         layout.addWidget(buttons)
@@ -319,6 +335,29 @@ class SettingsDialog(QDialog):
         )
         if path:
             self._adif_edit.setText(path)
+
+    def _update_cty_label(self) -> None:
+        import cty_cache as _cty
+        age = _cty.cty_age_days()
+        if age is None:
+            text = "Not downloaded yet."
+        else:
+            days = int(age)
+            text = f"Age: {days} day{'s' if days != 1 else ''}  —  {_cty.cty_plist_path()}"
+        self._cty_status_label.setText(text)
+
+    def _refresh_cty(self) -> None:
+        from PyQt6.QtCore import Qt
+        import cty_cache as _cty
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            _cty.download_cty()
+            self._cty_refreshed = True
+        except Exception as exc:
+            QMessageBox.warning(self, "CTY Refresh", f"Download failed:\n{exc}")
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._update_cty_label()
 
     # -- result properties -----------------------------------------------------
 
@@ -424,3 +463,8 @@ class SettingsDialog(QDialog):
     def telnet2_callsign(self) -> str:
         """Login callsign for DX Cluster 2 (stripped, upper-case)."""
         return self._t2_call.text().strip().upper()
+
+    @property
+    def cty_refreshed(self) -> bool:
+        """True if the user clicked Refresh CTY during this dialog session."""
+        return self._cty_refreshed

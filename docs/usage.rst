@@ -289,3 +289,41 @@ the corresponding row in the spot table: digital spots are sent to WSJT-X and
 (if Commander is enabled) the radio is QSYed; CW/SSB spots QSY via Commander
 only.  A 10-pixel click tolerance is applied so you do not need to hit the line
 exactly.
+
+Country lookup file (CTY)
+--------------------------
+
+DX Spotter uses pyhamtools to map callsigns to DXCC entities.  pyhamtools
+reads the `CTY country file <https://www.country-files.com/>`_ (``cty.plist``),
+which maps prefixes to countries, CQ zones, ADIF numbers, and grid coordinates.
+
+Cache location
+~~~~~~~~~~~~~~
+
+The file is cached at::
+
+    ~/Library/Application Support/DXSpotter/cty.plist
+
+DX Spotter downloads a fresh copy on first launch and again whenever the cached
+copy is more than 30 days old.
+
+Refreshing manually
+~~~~~~~~~~~~~~~~~~~
+
+Open **Settings** and click **Refresh CTY…** to download a current copy
+immediately.  The label in the Settings dialog shows the file's current age.
+The callsign lookup engine reloads automatically when the dialog is accepted.
+
+App bundle (offline use)
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+The macOS ``.app`` bundle includes a snapshot of ``cty.plist`` current at
+build time.  On the very first launch without internet access this seed is
+copied to the cache location.  Subsequent updates require a network connection
+or a manual **Refresh CTY…**.
+
+Command-line override
+~~~~~~~~~~~~~~~~~~~~~
+
+Pass ``--cty-plist /path/to/cty.plist`` to use a specific file instead of the
+cache.  See :option:`--cty-plist`.
