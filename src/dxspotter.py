@@ -1022,6 +1022,7 @@ class DXSpotter:
         self.window.criterion_changed.connect(self._on_criterion_changed)
         self.window.spot_activated.connect(self._on_spot_activated)
         self.window.settings_requested.connect(self._open_settings)
+        self.window.reload_log_requested.connect(self._reload_log)
         self.window._spot_table.spots_expired.connect(self._on_spots_expired)
         self.window.restyle_spots(self.adif_log, self._criterion)
         self.window.set_max_spot_age(cfg.max_spot_age)
@@ -1154,6 +1155,17 @@ class DXSpotter:
         cfg.display_filter = self.window.get_display_filter()
         save_config(cfg)
         print(f"Config saved to {config_path()}")
+
+    def _reload_log(self) -> None:
+        """Re-parse the current log source and refresh all spot colours."""
+        if self.window is None:
+            return
+        cfg = self._config
+        self.adif_log = self._load_log(cfg)
+        self.window.restyle_spots(self.adif_log, self._criterion)
+        self.window.set_log_info(self._log_info_text(cfg, self.adif_log))
+        src = 'RumLogNG' if cfg.log_source == 'rumlogng' else cfg.adif_path
+        print(f"Log reloaded: {src}")
 
     def _open_settings(self) -> None:
         """Open the Settings dialog; apply changes immediately where possible."""

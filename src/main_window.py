@@ -98,11 +98,12 @@ class MainWindow(QMainWindow):
     new_spot          = pyqtSignal(dict)   # MQTT/WSJT-X thread → table (thread-safe)
     call_busy         = pyqtSignal(str)    # WSJT-X thread → dim call in table
     call_active       = pyqtSignal(str)    # WSJT-X thread → undim call in table
-    restart_requested = pyqtSignal()       # Restart button → DXSpotter
-    settings_changed  = pyqtSignal(dict)  # any param change → DXSpotter
-    criterion_changed = pyqtSignal(str)   # award criteria radio button → DXSpotter
-    spot_activated    = pyqtSignal(dict)  # double-click on spot row → DXSpotter
+    restart_requested  = pyqtSignal()      # Restart button → DXSpotter
+    settings_changed   = pyqtSignal(dict) # any param change → DXSpotter
+    criterion_changed  = pyqtSignal(str)  # award criteria radio button → DXSpotter
+    spot_activated     = pyqtSignal(dict) # double-click on spot row → DXSpotter
     settings_requested = pyqtSignal()     # Settings button → DXSpotter
+    reload_log_requested = pyqtSignal()   # Reload Log button → DXSpotter
 
     def __init__(self, initial_args: argparse.Namespace, initial_adif_path: str,
                  initial_criterion: str = 'mixed',
@@ -216,16 +217,19 @@ class MainWindow(QMainWindow):
         rpt_layout.addRow("Telnet 2:",     self._lbl_telnet2)
         rpt_layout.addRow("Total:",        self._lbl_total)
 
-        # ── Restart / Settings / Quit buttons ────────────────────────────────
-        btn_restart  = QPushButton("Restart")
-        btn_settings = QPushButton("Settings")
-        btn_quit     = QPushButton("Quit")
+        # ── Restart / Reload Log / Settings / Quit buttons ───────────────────
+        btn_restart    = QPushButton("Restart")
+        btn_reload_log = QPushButton("Reload Log")
+        btn_settings   = QPushButton("Settings")
+        btn_quit       = QPushButton("Quit")
         btn_restart.clicked.connect(lambda: self.restart_requested.emit())
+        btn_reload_log.clicked.connect(lambda: self.reload_log_requested.emit())
         btn_settings.clicked.connect(lambda: self.settings_requested.emit())
         btn_quit.clicked.connect(lambda: QApplication.instance().quit())  # type: ignore[union-attr]
 
         btn_row = QHBoxLayout()
         btn_row.addWidget(btn_restart)
+        btn_row.addWidget(btn_reload_log)
         btn_row.addWidget(btn_settings)
         btn_row.addWidget(btn_quit)
 
