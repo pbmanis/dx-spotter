@@ -107,7 +107,9 @@ def main() -> None:
         parser.print_help()
         sys.exit(0)
 
-    for call in args.callsign:
+    for raw in args.callsign:
+        m = fcc_db._BASE_CALL_RE.match(raw.upper().strip())
+        call: str = m.group(1) if m else raw.upper().strip()
         try:
             lookup(call, show_location=args.location)
         except Exception as exc:

@@ -19,6 +19,7 @@ from __future__ import annotations
 import functools
 import io
 import math
+import re
 import sqlite3
 import tempfile
 import time
@@ -27,9 +28,10 @@ import zipfile
 from pathlib import Path
 from typing import Callable
 
-FCC_ULS_URL: str = (
-    "https://data.fcc.gov/download/pub/uls/complete/l_amat.zip"
-)
+FCC_ULS_URL: str = "https://data.fcc.gov/download/pub/uls/complete/l_amat.zip"
+
+# Leading alphanumeric run — handles TI8/W2RE → TI8 and NC3G/4 → NC3G
+_BASE_CALL_RE = re.compile(r"^([A-Z0-9]+)", re.IGNORECASE)
 
 # US state / territory centroid coordinates (decimal degrees)
 _US_STATE_CENTROIDS: dict[str, tuple[float, float]] = {
@@ -451,12 +453,8 @@ def lookup_location(call: str) -> tuple[float, float] | None:
     """
     call = call.upper().strip()
 
-    # Strip /P, /MM, /AM etc. and prefix (DL/W1AW → W1AW for FCC lookup,
-    # but DL/W1AW would not be in the FCC DB anyway; this mainly handles
-    # portable designators on US calls like W1AW/4).
-    home = call.split("/")[-1] if "/" in call else call
-    if not any(c.isdigit() for c in home):
-        home = call  # prefix-only fragment; try the full call
+    m = _BASE_CALL_RE.match(call)
+    home = m.group(1) if m else call
 
     # Canadian province centroid via 3-char prefix
     if home[:2] in ("VE", "VA", "VO", "VY"):
@@ -507,6 +505,7 @@ def lookup_callsign_info(call: str) -> dict[str, str] | None:
     call : str
         Amateur radio callsign (case-insensitive).  Portable and mobile
         designators (``/P``, ``/MM``, etc.) are stripped before lookup.
+        Suffixes (``-1``, ``-2``, etc.) are also stripped.
 
     Returns
     -------
@@ -515,7 +514,8 @@ def lookup_callsign_info(call: str) -> dict[str, str] | None:
         and ``'state'``, or ``None`` if the callsign is not found in the
         local FCC database.
     """
-    home = call.upper().strip().split("/")[-1]
+    m = _BASE_CALL_RE.match(call.upper().strip())
+    home = m.group(1) if m else call.upper().strip()
     if not any(c.isdigit() for c in home):
         home = call.upper().strip()
 
