@@ -577,6 +577,13 @@ class DXSpotter:
         if not band:
             return  # frequency outside recognized ham bands
 
+        # Do not show telnet-derived spots from outside the US or Canada
+        # so that "irrelevant" spots from outside North America are filtered out.
+        # technically, this should be a setting...
+        spotter = raw['rc']
+        if self.get_dxcc(spotter) not in (291, 1):
+            return
+
         # Apply band filter when a specific band is selected
         if self.args.band is not None and band != self.args.band:
             return
