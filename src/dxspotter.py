@@ -22,6 +22,7 @@ from appconfig import AppConfig, config_path, load_config, save_config
 from callsign_corrections import correct_entity
 from commander_client import CommanderClient, is_available as commander_available
 import cty_cache
+import fcc_db
 from main_window import MainWindow, make_app_icon
 from mqtt_listener import MqttListener
 from settings_dialog import SettingsDialog
@@ -127,6 +128,8 @@ class DXSpotter:
         self._commander_freq_khz: float = 0.0   # latest RX freq from Commander (GIL-safe)
         self._commander_stop_event: threading.Event = threading.Event()
         self._commander_poll_thread: threading.Thread | None = None
+        self._fcc_build_thread: threading.Thread | None = None
+        self._fcc_status_message: str = ''  # written by worker, read by timer tick
 
     # -- radio control --------------------------------------------------------
 
@@ -588,6 +591,17 @@ class DXSpotter:
         if self.args.band is not None and band != self.args.band:
             return
 
+        # Look up spotter lat/lon from FCC DB and compute distance from operator.
+        # Falls back to 0 (filter bypassed) when the call is not in the DB yet.
+        spotter_pos = fcc_db.lookup_location(spotter)
+        if spotter_pos is not None:
+            op_lat, op_lon = fcc_db.grid_to_latlon(self.my_grid)
+            range_km = int(fcc_db.haversine_km(op_lat, op_lon, *spotter_pos))
+        else:
+            range_km = 0
+        if self.args.range is not None and range_km > self.args.range > 0:
+            return
+
         dxcc = self.get_dxcc(call)
         country = self.get_country_text(call)
         freq_offset = self.get_freq_offset(freq_hz, band, mode)
@@ -623,8 +637,8 @@ class DXSpotter:
                 'md':          mode,
                 'b':           band,
                 'rc':          raw['rc'],
-                'rl':          '',
-                'range':       0,
+                'rl':          raw.get('rl', ''),
+                'range':       range_km,
                 'unix_time':   unix_time,
                 'dxcc':        dxcc,
                 'source':      f'telnet{index}',
@@ -1019,6 +1033,13 @@ class DXSpotter:
                 print(f"Error: Callsign {self.args.call} is not valid!")
                 sys.exit(1)
 
+        age = fcc_db.fcc_db_age_days()
+        count = fcc_db.fcc_db_entry_count()
+        if age is None:
+            print("FCC DB: not found — use Settings → Update FCC Database to download")
+        else:
+            print(f"FCC DB: {count:,} callsigns, age {age:.1f} days")
+
         self.topic = self.build_topic()
 
         adif_path = cfg.adif_path
@@ -1069,6 +1090,9 @@ class DXSpotter:
             self._update_telnet_status()
             self._update_commander_band()
             self.window.set_bandmap_band(self._effective_bandmap_band())
+            if self._fcc_status_message:
+                self.window.statusBar().showMessage(self._fcc_status_message, 6000)
+                self._fcc_status_message = ''
 
         self._count_timer.timeout.connect(_tick)
         self._count_timer.start(250)
@@ -1198,6 +1222,30 @@ class DXSpotter:
         self.cinfo = Callinfo(lookuplib)
         print(f"CTY reloaded: {cty_path}")
 
+    def _start_fcc_update(self) -> None:
+        # Start a background FCC database build if one is not already running.
+        if self._fcc_build_thread is not None and self._fcc_build_thread.is_alive():
+            return
+        if self.window is not None:
+            self.window.statusBar().showMessage(
+                "FCC database download started — check console for progress …"
+            )
+        self._fcc_build_thread = threading.Thread(
+            target=self._fcc_build_worker,
+            daemon=True,
+            name='fcc-db-build',
+        )
+        self._fcc_build_thread.start()
+
+    def _fcc_build_worker(self) -> None:
+        # Run in a daemon thread; sets _fcc_status_message when done (GIL-safe).
+        try:
+            fcc_db.build_fcc_db(progress_cb=lambda msg: print(msg))
+            count = fcc_db.fcc_db_entry_count() or 0
+            self._fcc_status_message = f"FCC database updated: {count:,} callsigns."
+        except Exception as exc:
+            self._fcc_status_message = f"FCC database update failed: {exc}"
+
     def _open_settings(self) -> None:
         """Open the Settings dialog; apply changes immediately where possible."""
         if self.window is None:
@@ -1227,6 +1275,7 @@ class DXSpotter:
             cty_path=str(cty_cache.cty_plist_path()),
             parent=self.window,
         )
+        dlg.fcc_update_requested.connect(self._start_fcc_update)
         if dlg.exec() != SettingsDialog.DialogCode.Accepted:
             return
 

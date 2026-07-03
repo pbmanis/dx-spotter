@@ -30,6 +30,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFontDatabase, QIcon, QPixmap
 
+import fcc_db
+
 if TYPE_CHECKING:
     from adif_log import ADIFLog
 
@@ -41,9 +43,10 @@ COLUMNS = ["DX Call", "SNR", "Country", "DX Grid", "Time", "Age",
 # DXCC entity numbers for mainland US and Canada (excluded by 'dxcc_only' filter)
 _US_CANADA_DXCC: frozenset[int] = frozenset({1, 291})
 
-AGE_COL = COLUMNS.index("Age")
-QSL_COL = COLUMNS.index("QSL")
-CALL_COL = COLUMNS.index("DX Call")
+AGE_COL      = COLUMNS.index("Age")
+QSL_COL      = COLUMNS.index("QSL")
+CALL_COL     = COLUMNS.index("DX Call")
+REPORTER_COL = COLUMNS.index("Reporter")
 # Separate role for the spot-action dict on CALL_COL (avoids collision with
 # the dxcc/band/mode dict stored in UserRole on the same cell).
 _SPOT_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -727,7 +730,18 @@ class SpotTable(QWidget):
 
     def _on_context_menu(self, pos) -> None:
         item = self.table.itemAt(pos)
-        if item is None or item.column() != QSL_COL:
+        if item is None:
+            return
+
+        col = item.column()
+
+        # ── Reporter column: FCC licensee lookup ──────────────────────────────
+        if col == REPORTER_COL:
+            self._show_reporter_info(pos, item.row())
+            return
+
+        # ── QSL column: worked/confirmed QSO details ──────────────────────────
+        if col != QSL_COL:
             return
         if self._adif_log is None:
             return
@@ -789,5 +803,51 @@ class SpotTable(QWidget):
             ))
             for entry in sorted_wkd:
                 _add(f"  {entry['band'].lower()}/{entry['mode']}: {entry['call']}  {_fmt_date(entry['date'])}")
+
+        menu.exec(self.table.viewport().mapToGlobal(pos))  # type: ignore[union-attr]
+
+    def _show_reporter_info(self, pos, row: int) -> None:
+        # Show FCC licensee details for the reporter callsign in a right-click popup.
+        rc_item = self.table.item(row, REPORTER_COL)
+        if rc_item is None:
+            return
+        reporter = rc_item.text().strip()
+        if not reporter:
+            return
+
+        fixed_family = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont).family()
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: #1a1a2e;
+                color: #ffffff;
+                border: 1px solid #006080;
+                font-family: {fixed_family};
+                font-size: 11pt;
+            }}
+            QMenu::item {{ color: #ffffff; }}
+            QMenu::item:disabled {{ color: #cccccc; }}
+            QMenu::separator {{ background: #006080; height: 1px; margin: 4px 8px; }}
+        """)
+
+        def _add(s: str) -> None:
+            a = menu.addAction(s)
+            if a is not None:
+                a.setEnabled(False)
+
+        _add(f"Reporter: {reporter}")
+        menu.addSeparator()
+
+        if not fcc_db.fcc_db_path().exists():
+            _add("FCC database not downloaded.")
+            _add("Use Settings → Update FCC Database.")
+        else:
+            info = fcc_db.lookup_callsign_info(reporter)
+            if info is None:
+                _add("Not found in FCC database.")
+            else:
+                _add(f"Name:    {info['name']}")
+                _add(f"Class:   {info['license_class']}")
+                _add(f"City:    {info['city']}, {info['state']}")
 
         menu.exec(self.table.viewport().mapToGlobal(pos))  # type: ignore[union-attr]

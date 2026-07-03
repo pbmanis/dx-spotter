@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
@@ -36,6 +37,9 @@ class SettingsDialog(QDialog):
     :attr:`udp_address`, and :attr:`udp_port` after :meth:`exec` returns
     ``Accepted``.
     """
+
+    #: Emitted when the user requests an FCC database rebuild.
+    fcc_update_requested = pyqtSignal()
 
     def __init__(self, log_source: str, adif_path: str,
                  udp_address: str, udp_port: int,
@@ -262,6 +266,25 @@ class SettingsDialog(QDialog):
         cty_layout.addWidget(self._cty_refresh_btn)
         self._update_cty_label()
 
+        # ── FCC Amateur Call Database ─────────────────────────────────────────
+        fcc_box = QGroupBox("FCC Amateur Call Database")
+        fcc_layout = QVBoxLayout(fcc_box)
+        self._fcc_status_label = QLabel()
+        self._fcc_update_btn = QPushButton("Update FCC Database…")
+        self._fcc_update_btn.clicked.connect(self._request_fcc_update)
+        fcc_layout.addWidget(self._fcc_status_label)
+        fcc_layout.addWidget(self._fcc_update_btn)
+        fcc_note = QLabel(
+            "Downloads and indexes the FCC ULS amateur licence database "
+            "(~30 MB).  Used to compute reporter distance for DX Cluster "
+            "spots.  The download runs in the background; progress appears "
+            "in the main window status bar."
+        )
+        fcc_note.setWordWrap(True)
+        fcc_note.setStyleSheet("color: #999999; font-size: 10pt;")
+        fcc_layout.addWidget(fcc_note)
+        self._update_fcc_label()
+
         # ── DX Cluster (Telnet) ───────────────────────────────────────────────
         telnet_box = QGroupBox("DX Cluster (Telnet)")
         telnet_layout = QVBoxLayout(telnet_box)
@@ -317,6 +340,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(cmd_box)
         layout.addWidget(cmd_note)
         layout.addWidget(cty_box)
+        layout.addWidget(fcc_box)
         layout.addWidget(telnet_box)
         layout.addStretch()
         layout.addWidget(buttons)
@@ -345,6 +369,25 @@ class SettingsDialog(QDialog):
             days = int(age)
             text = f"Age: {days} day{'s' if days != 1 else ''}  —  {_cty.cty_plist_path()}"
         self._cty_status_label.setText(text)
+
+    def _update_fcc_label(self) -> None:
+        import fcc_db as _fcc
+        age = _fcc.fcc_db_age_days()
+        count = _fcc.fcc_db_entry_count()
+        if age is None:
+            text = "Not downloaded."
+        else:
+            days = int(age)
+            text = (
+                f"Age: {days} day{'s' if days != 1 else ''}  —  "
+                f"{count:,} callsigns  —  {_fcc.fcc_db_path()}"
+            )
+        self._fcc_status_label.setText(text)
+
+    def _request_fcc_update(self) -> None:
+        self._fcc_update_btn.setEnabled(False)
+        self._fcc_update_btn.setText("Updating (background)…")
+        self.fcc_update_requested.emit()
 
     def _refresh_cty(self) -> None:
         from PyQt6.QtCore import Qt
