@@ -417,6 +417,21 @@ class MainWindow(QMainWindow):
                 return btn.property('criterion')
         return _DEFAULT_CRITERION
 
+    def set_criterion(self, key: str) -> None:
+        """Programmatically select an award criterion and emit criterion_changed.
+
+        Parameters
+        ----------
+        key : str
+            Criterion key (e.g. ``'6m'``, ``'was'``).  No-op if *key* is not
+            found among the radio buttons.
+        """
+        for btn in self._crit_group.buttons():
+            if btn.property('criterion') == key:
+                btn.setChecked(True)
+                self.criterion_changed.emit(key)
+                return
+
     def get_display_filter(self) -> str:
         """Return the currently selected display filter key.
 

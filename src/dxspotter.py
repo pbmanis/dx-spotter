@@ -310,6 +310,12 @@ class DXSpotter:
         if self.args.band != old_band and self.args.band is not None:
             self._qsy_rigctld(self.args.band)
 
+        # Auto-select criterion when switching to 6m
+        if self.args.band == '6m' and self.args.band != old_band and self.window is not None:
+            df = self.window.get_display_filter()
+            self.window.set_criterion('was' if df == 'all' else '6m')
+            
+
         # Start / stop WSJT-X listener.  Only do a full restart (socket rebind)
         # when the port changes; for filter/call changes, update in place to
         # avoid a race where the old socket still holds the port for up to 1 s.
