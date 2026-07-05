@@ -95,6 +95,12 @@ class ADIFLog:
     _was_worked : dict[str, set[str]]
         Maps upper-case band → set of US state abbreviations worked on that band
         (confirmed or not).
+    _was_conf_details : dict[tuple[str, str], list[dict[str, str]]]
+        Maps ``(state_upper, band_upper)`` → list of ``{call, date, grid, band, mode}``
+        dicts for confirmed WAS QSOs.
+    _was_wkd_details : dict[tuple[str, str], list[dict[str, str]]]
+        Maps ``(state_upper, band_upper)`` → list of ``{call, date, grid, band, mode}``
+        dicts for worked-but-unconfirmed WAS QSOs.
     _call_state : dict[str, str]
         Maps upper-case callsign → US state abbreviation (any band/mode).
     """
@@ -125,6 +131,8 @@ class ADIFLog:
         self._worked_modes: dict[int, set[str]] = {}
         self._was_confirmed: dict[str, set[str]] = {}
         self._was_worked: dict[str, set[str]] = {}
+        self._was_conf_details: dict[tuple[str, str], list[dict[str, str]]] = {}
+        self._was_wkd_details: dict[tuple[str, str], list[dict[str, str]]] = {}
         self._call_state: dict[str, str] = {}
         self._user_grid: dict[str, str] = {}
         self._load(filepath)
@@ -207,6 +215,8 @@ class ADIFLog:
         obj._worked_modes = {}
         obj._was_confirmed = {}
         obj._was_worked = {}
+        obj._was_conf_details = {}
+        obj._was_wkd_details = {}
         obj._call_state = {}
         obj._user_grid = {}
         obj._load_rumlogng(Path(db_path), config=config)
@@ -214,7 +224,7 @@ class ADIFLog:
 
     # -- RumLogNG SQLite loader (read-only) -----------------------------------
 
-    def _load_rumlogng(self, db_path: Path, table_inquiry: bool = False, config: None=None) -> None:
+    def _load_rumlogng(self, db_path: Path, table_inquiry: bool = False, config: object = None) -> None:
         if not db_path.exists():
             print(f"Warning: RumLogNG database not found: {db_path}")
             return
@@ -280,6 +290,7 @@ class ADIFLog:
             except (TypeError, ValueError, OSError):
                 date_str = ''
 
+            grid = (user_1 or '').upper().strip()
             key = (dxcc, band, mode)
             self._worked.add(key)
             self._worked_dxcc.add(dxcc)
@@ -301,21 +312,29 @@ class ADIFLog:
                 self._confirmed_modes.setdefault(dxcc, set()).add(mode)
                 self._confirmed_by_dxcc.setdefault(dxcc, {}).setdefault((band, mode), []).append(call)
                 self._confirmed_details.setdefault(key, []).append(
-                    {'call': call, 'date': date_str}
+                    {'call': call, 'date': date_str, 'grid': grid}
                 )
             else:
                 self._worked_details.setdefault(key, []).append(
-                    {'call': call, 'date': date_str}
+                    {'call': call, 'date': date_str, 'grid': grid}
                 )
 
             state = (state_raw or '').upper().strip()
             if dxcc == 291 and state:
                 self._call_state[call.upper()] = state
                 self._was_worked.setdefault(band, set()).add(state)
+                was_key = (state, band)
+                was_detail = {
+                    'call': call, 'date': date_str, 'grid': grid,
+                    'band': band, 'mode': mode,
+                }
                 if confirmed:
                     self._was_confirmed.setdefault(band, set()).add(state)
-            self._user_grid[call.upper()] = (user_1 or '').upper().strip()
-            if self._user_grid[call.upper()] == '':  # use the current grid setting from the configuration.
+                    self._was_conf_details.setdefault(was_key, []).append(was_detail)
+                else:
+                    self._was_wkd_details.setdefault(was_key, []).append(was_detail)
+            self._user_grid[call.upper()] = grid
+            if not self._user_grid[call.upper()] and config is not None:
                 self._user_grid[call.upper()] = config.my_grid.upper().strip()
             all_user_grids.add(self._user_grid[call.upper()].upper().strip())
             self._total_qsos += 1
@@ -369,6 +388,8 @@ class ADIFLog:
                 continue
 
             call = rec.get('CALL', '')
+            my_grid = rec.get('MY_GRIDSQUARE', rec.get('MYGRID', '')).upper().strip()
+            qso_date = rec.get('QSO_DATE', '')
             key  = (dxcc, band, mode)
             self._worked.add(key)
             self._worked_dxcc.add(dxcc)
@@ -377,7 +398,8 @@ class ADIFLog:
 
             lotw_ok  = rec.get('LOTW_QSL_RCVD', '').upper() == 'Y'
             paper_ok = rec.get('QSL_RCVD',      '').upper() == 'Y'
-            if lotw_ok or paper_ok:
+            confirmed = lotw_ok or paper_ok
+            if confirmed:
                 self._confirmed.add(key)
                 self._confirmed_dxcc.add(dxcc)
                 if lotw_ok:
@@ -388,21 +410,27 @@ class ADIFLog:
                 self._confirmed_modes.setdefault(dxcc, set()).add(mode)
                 self._confirmed_by_dxcc.setdefault(dxcc, {}).setdefault((band, mode), []).append(call)
                 self._confirmed_details.setdefault(key, []).append({
-                    'call': call,
-                    'date': rec.get('QSO_DATE', ''),
+                    'call': call, 'date': qso_date, 'grid': my_grid,
                 })
             else:
                 self._worked_details.setdefault(key, []).append({
-                    'call': call,
-                    'date': rec.get('QSO_DATE', ''),
+                    'call': call, 'date': qso_date, 'grid': my_grid,
                 })
 
             state = rec.get('STATE', '').upper().strip()
             if dxcc == 291 and state:
                 self._call_state[call.upper()] = state
                 self._was_worked.setdefault(band, set()).add(state)
-                if lotw_ok or paper_ok:
+                was_key = (state, band)
+                was_detail = {
+                    'call': call, 'date': qso_date, 'grid': my_grid,
+                    'band': band, 'mode': mode,
+                }
+                if confirmed:
                     self._was_confirmed.setdefault(band, set()).add(state)
+                    self._was_conf_details.setdefault(was_key, []).append(was_detail)
+                else:
+                    self._was_wkd_details.setdefault(was_key, []).append(was_detail)
 
             self._total_qsos += 1
 
@@ -733,6 +761,34 @@ class ADIFLog:
             empty string when the callsign has no US state recorded in the log.
         """
         return self._call_state.get(call.upper(), '')
+
+    def was_qso_details(
+        self, state: str, band: str
+    ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+        """Return per-QSO details for WAS contacts with a given US state on a band.
+
+        Parameters
+        ----------
+        state : str
+            Two-letter US state abbreviation (case-insensitive, e.g. ``'OH'``).
+        band : str
+            Band string (case-insensitive, e.g. ``'20m'`` or ``'20M'``).
+
+        Returns
+        -------
+        confirmed_list : list[dict[str, str]]
+            QSOs with stations in this state on this band that have a confirmed
+            QSL.  Each dict has keys ``call``, ``date``, ``grid``, ``band``,
+            ``mode``.
+        worked_list : list[dict[str, str]]
+            QSOs with stations in this state on this band with no confirmed QSL.
+            Same dict structure as ``confirmed_list``.
+        """
+        key = (state.upper(), band.upper())
+        return (
+            list(self._was_conf_details.get(key, [])),
+            list(self._was_wkd_details.get(key, [])),
+        )
 
     def was_status(self, state: str, band: str) -> str:
         """Return the WAS award status for a US state on a given band.

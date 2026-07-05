@@ -9,7 +9,7 @@ Module-level constants
 ----------------------
 COLUMNS : list[str]
     Ordered list of column header strings for the spot table.
-AGE_COL, QSL_COL, CALL_COL : int
+SPOT_AGE_COL, QSL_COL, CALL_COL : int
     Pre-computed column indices for the Age, QSL, and DX Call columns.
 AWARD_COLORS : dict[str, tuple[str, str]]
     Maps award status → ``(background_hex, foreground_hex)`` color pairs.
@@ -36,16 +36,17 @@ if TYPE_CHECKING:
     from adif_log import ADIFLog
 
 
-COLUMNS = ["DX Call", "SNR", "Country", "DX Grid", "Time", "Age",
+COLUMNS = ["DX Call", "SNR", "Country", "DX Grid", "Time", "Spot Age",
            "dHz", "Dist", "Mode", "Band", "Src", "Reporter", "Rptr Grid",
            "Range", "QSL"]
 
 # DXCC entity numbers for mainland US and Canada (excluded by 'dxcc_only' filter)
 _US_CANADA_ENTITY_NUMBERS: frozenset[int] = frozenset({1, 291})
 
-AGE_COL      = COLUMNS.index("Age")
+SPOT_AGE_COL = COLUMNS.index("Spot Age")
 QSL_COL      = COLUMNS.index("QSL")
 CALL_COL     = COLUMNS.index("DX Call")
+COUNTRY_COL  = COLUMNS.index("Country")
 REPORTER_COL = COLUMNS.index("Reporter")
 TIME_COL     = COLUMNS.index("Time")
 
@@ -562,13 +563,27 @@ class SpotTable(QWidget):
         else:
             qsl_text = _award_qsl_label(status, criterion, band, conf_list, wkd_list)
 
+        # WAS mode: replace Country with "US <state>" for US stations.
+        orig_country = spot['country']
+        country_display = orig_country
+        if criterion == 'was' and dxcc == 291:
+            has_suffix = '/' in call
+            if has_suffix:
+                was_state = '?'
+            else:
+                was_state = state  # from adif.call_state() above ('' if unknown)
+                if not was_state:
+                    info = fcc_db.lookup_callsign_info(call)
+                    was_state = info.get('state', '') if info else ''
+            country_display = f"US {was_state}" if was_state else "US"
+
         values = [
             spot['call'],                                                    # DX Call
             f"{spot['rp']} dB",                                              # SNR
-            spot['country'],                                                 # Country
+            country_display,                                                 # Country
             spot['loc'][:6],                                                 # DX Grid
             ts[-8:] if self._laptop_mode else ts,                           # Time
-            _format_age(int(time.time() - spot['unix_time'])),              # Age
+            _format_age(int(time.time() - spot['unix_time'])),              # Spot Age
             str(spot['freq_offset']),                                        # dHz
             str(spot['distance']),                                           # Dist
             spot['md'],                                                      # Mode
@@ -582,17 +597,19 @@ class SpotTable(QWidget):
 
         wsjt = src == 'wsjt'
         for col, val in enumerate(values):
-            item = _AgeItem(val) if col == AGE_COL else QTableWidgetItem(val)
+            item = _AgeItem(val) if col == SPOT_AGE_COL else QTableWidgetItem(val)
             item.setBackground(bg)
             item.setForeground(fg)
             if wsjt:
                 item.setFont(self._italic_font)
-            if col == AGE_COL:
+            if col == SPOT_AGE_COL:
                 item.setData(Qt.ItemDataRole.UserRole, spot['unix_time'])
             elif col == CALL_COL:
                 item.setData(Qt.ItemDataRole.UserRole, {'dxcc': dxcc, 'band': band, 'mode': mode})
             elif col == TIME_COL:
                 item.setData(Qt.ItemDataRole.UserRole, ts)
+            elif col == COUNTRY_COL:
+                item.setData(Qt.ItemDataRole.UserRole, orig_country)
             self.table.setItem(row, col, item)
 
         # store spot-action dict on CALL_COL using _SPOT_ROLE (UserRole is
@@ -717,6 +734,23 @@ class SpotTable(QWidget):
                 else:
                     qsl_item.setText(_award_qsl_label(status, criterion, band, conf_list, wkd_list))
 
+            # Update Country column: show "US <state>" for WAS, restore original otherwise.
+            country_item = self.table.item(row, COUNTRY_COL)
+            if country_item is not None:
+                orig_country: str = country_item.data(Qt.ItemDataRole.UserRole) or country_item.text()
+                if criterion == 'was' and dxcc == 291:
+                    has_suffix = '/' in call
+                    if has_suffix:
+                        was_state = '?'
+                    else:
+                        was_state = state  # already computed for WAS+adif path; '' otherwise
+                        if not was_state:
+                            info = fcc_db.lookup_callsign_info(call)
+                            was_state = info.get('state', '') if info else ''
+                    country_item.setText(f"US {was_state}" if was_state else "US")
+                else:
+                    country_item.setText(orig_country)
+
         self.table.setUpdatesEnabled(True)
         self.table.setSortingEnabled(True)
 
@@ -726,7 +760,7 @@ class SpotTable(QWidget):
         now = time.time()
         expired_rows: list[tuple[int, str]] = []  # (row, source)
         for row in range(self.table.rowCount()):
-            item = self.table.item(row, AGE_COL)
+            item = self.table.item(row, SPOT_AGE_COL)
             if item is None:
                 continue
             unix_time = item.data(Qt.ItemDataRole.UserRole)
@@ -795,8 +829,31 @@ class SpotTable(QWidget):
         dxcc = row_data.get('dxcc', -1)
         band = row_data.get('band', '')
         call = call_item.text()
+        criterion = self._criterion
 
-        conf_list, wkd_list = self._adif_log.criterion_qso_details(dxcc, band, self._criterion)
+        if criterion == 'was':
+            # WAS only applies to US stations (dxcc 291).
+            if dxcc != 291:
+                return
+            # Determine state from log or FCC; skip popup for unknown portable calls.
+            was_state = self._adif_log.call_state(call)
+            if not was_state:
+                if '/' in call:
+                    return  # portable/mobile — state indeterminate
+                info = fcc_db.lookup_callsign_info(call)
+                was_state = info.get('state', '') if info else ''
+            if not was_state:
+                return
+            all_conf, all_wkd = self._adif_log.was_qso_details(was_state, band)
+            # Limit to this specific call — state is shown in the header, not used to
+            # broaden the contact list.
+            call_up = call.upper()
+            conf_list = [e for e in all_conf if e['call'].upper() == call_up]
+            wkd_list  = [e for e in all_wkd  if e['call'].upper() == call_up]
+        else:
+            was_state = ''
+            conf_list, wkd_list = self._adif_log.criterion_qso_details(dxcc, band, criterion)
+
         if not conf_list and not wkd_list:
             return
 
@@ -820,9 +877,16 @@ class SpotTable(QWidget):
             if a is not None:
                 a.setEnabled(False)
 
-        crit_label = _CRIT_ABBR.get(self._criterion, self._criterion.upper())
-        _add(f"Call: {call}  [{crit_label}]")
+        crit_label = _CRIT_ABBR.get(criterion, criterion.upper())
+        header = f"Call: {call}  [{crit_label}]"
+        if was_state:
+            header += f"  State: {was_state}"
+        _add(header)
         menu.addSeparator()
+
+        def _entry_line(entry: dict[str, str]) -> str:
+            grid_part = f"  {entry['grid']}" if entry.get('grid') else ''
+            return f"  {entry['band'].lower()}/{entry['mode']}: {entry['call']}  {_fmt_date(entry['date'])}{grid_part}"
 
         if conf_list:
             _add("Confirmed:")
@@ -830,7 +894,7 @@ class SpotTable(QWidget):
                 self._band_sort_key(e['band']), self._MODE_SORT.get(e['mode'], 99)
             ))
             for entry in sorted_conf:
-                _add(f"  {entry['band'].lower()}/{entry['mode']}: {entry['call']}  {_fmt_date(entry['date'])}")
+                _add(_entry_line(entry))
 
         if wkd_list and conf_list:
             menu.addSeparator()
@@ -841,7 +905,7 @@ class SpotTable(QWidget):
                 self._band_sort_key(e['band']), self._MODE_SORT.get(e['mode'], 99)
             ))
             for entry in sorted_wkd:
-                _add(f"  {entry['band'].lower()}/{entry['mode']}: {entry['call']}  {_fmt_date(entry['date'])}")
+                _add(_entry_line(entry))
 
         menu.exec(self.table.viewport().mapToGlobal(pos))  # type: ignore[union-attr]
 
