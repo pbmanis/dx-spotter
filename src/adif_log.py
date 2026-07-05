@@ -126,6 +126,7 @@ class ADIFLog:
         self._was_confirmed: dict[str, set[str]] = {}
         self._was_worked: dict[str, set[str]] = {}
         self._call_state: dict[str, str] = {}
+        self._user_grid: dict[str, str] = {}
         self._load(filepath)
 
     @property
@@ -170,7 +171,7 @@ class ADIFLog:
         return sum(1 for bands in self._confirmed_bands.values() if band_up in bands)
 
     @classmethod
-    def from_rumlogng(cls, db_path: str | Path = RUMLOGNG_DB_PATH) -> 'ADIFLog':
+    def from_rumlogng(cls, db_path: str | Path = RUMLOGNG_DB_PATH, config: None=None) -> 'ADIFLog':
         """Create an :class:`ADIFLog` populated from the RumLogNG CloudKit SQLite database.
 
         The database is opened in read-only URI mode (``?mode=ro``) and is never
@@ -207,38 +208,63 @@ class ADIFLog:
         obj._was_confirmed = {}
         obj._was_worked = {}
         obj._call_state = {}
-        obj._load_rumlogng(Path(db_path))
+        obj._user_grid = {}
+        obj._load_rumlogng(Path(db_path), config=config)
         return obj
 
     # -- RumLogNG SQLite loader (read-only) -----------------------------------
 
-    def _load_rumlogng(self, db_path: Path) -> None:
+    def _load_rumlogng(self, db_path: Path, table_inquiry: bool = False, config: None=None) -> None:
         if not db_path.exists():
             print(f"Warning: RumLogNG database not found: {db_path}")
             return
         try:
             # uri=True + ?mode=ro ensures the file is never written to
             uri = f"file:{db_path}?mode=ro"
-            con = sqlite3.connect(uri, uri=True)
+            conn = sqlite3.connect(uri, uri=True)
         except sqlite3.Error as e:
             print(f"Warning: could not open RumLogNG database: {e}")
             return
+        print(f"Loading RumLogNG database: {db_path}")
+        cursor = conn.cursor()
+        
+        if table_inquiry:
+            # Introspect the sql database for table names
+            # This can be useful to get other kinds of data from the log.
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+
+            # 3. Fetch all results and extract names from tuples
+            tables = [row[0] for row in cursor.fetchall()]
+
+            print("Tables in database:", tables)
+
+            for table_name in tables:
+                # Run the PRAGMA command for your table name
+                print("-"*80)
+                print("Table: ", table_name)
+                cursor.execute(f"PRAGMA table_info({table_name})")
+
+                # The column name is located at index 1 of each returned row tuple
+                column_names = [row[1] for row in cursor.fetchall()]
+
+                print(column_names)
+            exit()
 
         try:
-            cur = con.execute(
-                "SELECT ZCALLSIGN, ZBAND, ZMODE, ZDXCCADIF, ZQSL, ZLOTWQSL, ZDATETIME, ZSTATE "
+            cur = conn.execute(
+                "SELECT ZCALLSIGN, ZBAND, ZMODE, ZDXCCADIF, ZQSL, ZLOTWQSL, ZDATETIME, ZSTATE, ZUSER_1 "
                 "FROM ZCORE_QSO "
                 "WHERE ZCALLSIGN IS NOT NULL AND ZBAND IS NOT NULL AND ZMODE IS NOT NULL"
             )
             rows = cur.fetchall()
         except sqlite3.Error as e:
             print(f"Warning: could not query RumLogNG database: {e}")
-            con.close()
+            conn.close()
             return
         finally:
-            con.close()
-
-        for call, band_raw, mode_raw, dxcc_raw, qsl, lotw, cf_ts, state_raw in rows:
+            conn.close()
+        all_user_grids = set()
+        for call, band_raw, mode_raw, dxcc_raw, qsl, lotw, cf_ts, state_raw, user_1 in rows:
             try:
                 dxcc = int(dxcc_raw)
             except (TypeError, ValueError):
@@ -288,13 +314,17 @@ class ADIFLog:
                 self._was_worked.setdefault(band, set()).add(state)
                 if confirmed:
                     self._was_confirmed.setdefault(band, set()).add(state)
-
+            self._user_grid[call.upper()] = (user_1 or '').upper().strip()
+            if self._user_grid[call.upper()] == '':  # use the current grid setting from the configuration.
+                self._user_grid[call.upper()] = config.my_grid.upper().strip()
+            all_user_grids.add(self._user_grid[call.upper()].upper().strip())
             self._total_qsos += 1
 
         print(f"RumLogNG: {self._total_qsos} QSOs loaded, "
               f"{len(self._confirmed)} confirmed across "
               f"{len(self._confirmed_dxcc)} DXCC entities")
-
+        print(f"User grids: {', '.join(sorted(all_user_grids))}")
+        # exit()
     # -- parsing --------------------------------------------------------------
 
     @staticmethod
