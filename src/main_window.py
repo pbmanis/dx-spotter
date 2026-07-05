@@ -42,17 +42,24 @@ _CRITERIA: list[tuple[str, str]] = [
     ('digital', 'DXCC Digital'),
     ('ssb',     'DXCC SSB'),
     ('6m',      'DXCC 6M'),
-    ('was',     'WAS (current band)'),
+    ('was',     'WAS (current band) (current grid)'),
 ]
 _DEFAULT_CRITERION = 'mixed'
 
 # Display filter: controls which rows are visible in the spot table
 _DISPLAY_FILTERS: list[tuple[str, str]] = [
     ('all',         'All'),
+    ("us_canada", 'US & Canada only'),
     ('dxcc_only',   'DXCC only  (no US, Canada)'),
     ('unconfirmed', 'Unconfirmed or New'),
 ]
 _DEFAULT_DISPLAY_FILTER = 'all'
+
+# Network Status Symbols
+CONNECTED = "\U0001F310"     # 🌐
+CONNECTING = "\U0001F4E1"    # 📡
+DISCONNECTED = "\U0001F6AB" # 🚫
+
 
 
 class MainWindow(QMainWindow):
@@ -105,7 +112,7 @@ class MainWindow(QMainWindow):
     settings_requested = pyqtSignal()     # Settings button → DXSpotter
     reload_log_requested = pyqtSignal()   # Reload Log button → DXSpotter
 
-    def __init__(self, initial_args: argparse.Namespace, initial_adif_path: str,
+    def __init__(self, initial_args: argparse.Namespace,
                  initial_criterion: str = 'mixed',
                  initial_display_filter: str = 'all') -> None:
         """Create the main window and all child widgets.
@@ -115,9 +122,6 @@ class MainWindow(QMainWindow):
         initial_args : argparse.Namespace
             Parsed CLI / config arguments.  Used to populate the parameter tree
             with the band, mode, range, and terminal-output initial values.
-        initial_adif_path : str
-            Path to the ADIF log file displayed in the parameter-tree File
-            picker.
         initial_criterion : str, optional
             Award criterion to pre-select in the radio group (default
             ``'mixed'``).
@@ -133,10 +137,11 @@ class MainWindow(QMainWindow):
 
         # ── Status bar ────────────────────────────────────────────────────────
         self._sb_log  = QLabel("No log loaded")
-        self._sb_t1   = QLabel("T1: off")
-        self._sb_t2   = QLabel("T2: off")
-        self._sb_pskr = QLabel("PSKR: connecting…")
-        self._sb_wsjt = QLabel("WSJT-X: —")
+        # Status labels are all disconnected until setup is complete and connections are established.
+        self._sb_t1   = QLabel(f"T1: {DISCONNECTED}")
+        self._sb_t2   = QLabel(f"T2: {DISCONNECTED}")
+        self._sb_pskr = QLabel(f"PSKR: {DISCONNECTED}")
+        self._sb_wsjt = QLabel(f"WSJT-X: {DISCONNECTED}")
         self._sb_log.setStyleSheet("padding: 0 6px;")
         self._sb_t1.setStyleSheet("padding: 0 6px; color: #888888;")
         self._sb_t2.setStyleSheet("padding: 0 6px; color: #888888;")
@@ -148,22 +153,22 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self._sb_pskr)  # right: PSKR
         self.statusBar().addPermanentWidget(self._sb_wsjt)  # right: WSJT-X
 
-        left_dock    = Dock("Settings", size=(280, 700))
-        right_dock   = Dock("Spots",    size=(1120, 525))
-        bandmap_dock = Dock("Band Map", size=(1120, 175))
+        left_dock    = Dock("Settings", size=(300, 700))
+        right_dock   = Dock("Spots",    size=(1100, 525))
+        bandmap_dock = Dock("Band Map", size=(1100, 175))
         area.addDock(left_dock,    'left')
         area.addDock(right_dock,   'right',  relativeTo=left_dock)
         area.addDock(bandmap_dock, 'bottom', relativeTo=right_dock)
 
-        # ── Parameter tree ────────────────────────────────────────────────────
-        self._params = self._build_params(initial_args, initial_adif_path)
+        # ── build pyqtgraph Parameter tree
+        self._params = self._build_params(initial_args)
 
         pt = ParameterTree(showHeader=False)
         pt.setParameters(self._params, showTop=False)
         self._clear_action_labels(pt)
         self._params.sigTreeStateChanged.connect(self._on_params_changed)
 
-        # ── Award criteria radio buttons ──────────────────────────────────────
+        # ── Award criteria radio buttons
         criteria_box = QGroupBox("Award Criteria")
         crit_layout  = QVBoxLayout(criteria_box)
         crit_layout.setContentsMargins(6, 4, 6, 4)
@@ -217,21 +222,32 @@ class MainWindow(QMainWindow):
         rpt_layout.addRow("Telnet 2:",     self._lbl_telnet2)
         rpt_layout.addRow("Total:",        self._lbl_total)
 
-        # ── Restart / Reload Log / Settings / Quit buttons ───────────────────
+        # ── Restart / Reload Log / Settings / Quit / Laptop Mode buttons ─────
         btn_restart    = QPushButton("Restart")
         btn_reload_log = QPushButton("Reload Log")
         btn_settings   = QPushButton("Settings")
         btn_quit       = QPushButton("Quit")
+        btn_laptop     = QPushButton("Laptop Mode")
+        btn_laptop.setCheckable(True)
         btn_restart.clicked.connect(lambda: self.restart_requested.emit())
         btn_reload_log.clicked.connect(lambda: self.reload_log_requested.emit())
         btn_settings.clicked.connect(lambda: self.settings_requested.emit())
         btn_quit.clicked.connect(lambda: QApplication.instance().quit())  # type: ignore[union-attr]
+        btn_laptop.toggled.connect(
+            lambda checked: btn_laptop.setText(
+                "Laptop Mode: ON" if checked else "Laptop Mode: OFF"
+            )
+        )
 
-        btn_row = QHBoxLayout()
-        btn_row.addWidget(btn_restart)
-        btn_row.addWidget(btn_reload_log)
-        btn_row.addWidget(btn_settings)
-        btn_row.addWidget(btn_quit)
+        btn_row1 = QHBoxLayout()
+        btn_row1.addWidget(btn_restart)
+        btn_row1.addWidget(btn_settings)
+        btn_row1.addWidget(btn_laptop)
+
+
+        btn_row2 = QHBoxLayout()
+        btn_row2.addWidget(btn_reload_log)
+        btn_row2.addWidget(btn_quit)
 
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
@@ -241,11 +257,13 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(criteria_box)
         left_layout.addWidget(display_filter_box)
         left_layout.addWidget(reports_box)
-        left_layout.addLayout(btn_row)
+        left_layout.addLayout(btn_row1)
+        left_layout.addLayout(btn_row2)
         left_dock.addWidget(left_widget)
 
         # ── Spot table ────────────────────────────────────────────────────────
         self._spot_table = SpotTable()
+        btn_laptop.toggled.connect(self._spot_table.set_laptop_mode)
         right_dock.addWidget(self._spot_table)
         self.new_spot.connect(self._spot_table.add_spot)
         self.call_busy.connect(self._spot_table.dim_call)
@@ -275,7 +293,7 @@ class MainWindow(QMainWindow):
         _visit(pt.invisibleRootItem())
 
     @staticmethod
-    def _build_params(args: argparse.Namespace, adif_path: str) -> Parameter:
+    def _build_params(args: argparse.Namespace) -> Parameter:
         return Parameter.create(name='root', type='group', children=[
             dict(name='Data Filters', type='group', children=[
                 dict(name='Band',      type='list', limits=_BANDS,
@@ -292,18 +310,12 @@ class MainWindow(QMainWindow):
                      value=getattr(args, 'max_spot_age', 30), min=0,
                      tip='Remove spots older than this many minutes; 0 = keep forever'),
             ]),
-            dict(name='ADIF Log', type='group', children=[
-                dict(name='File', type='file', value=adif_path,
-                     fileMode='ExistingFile',
-                     nameFilter='ADIF Files (*.adif *.adi);;All Files (*)'),
-            ]),
         ])
 
     def _collect_settings(self) -> dict:
         # Read all parameter-tree values into a flat dict consumed by
         # DXSpotter._apply_settings.  'All' band is mapped to None.
-        p = self._params
-        df       = p.child('Data Filters')
+        df       = self._params.child('Data Filters')
         band_str = df.child('Band').value()
         range_km = df.child('Max Range (km)').value()
         return {
@@ -312,7 +324,6 @@ class MainWindow(QMainWindow):
             'range':        range_km if range_km > 0 else None,
             'wsjt_filter':  df.child('Decode Filter').value(),
             'max_spot_age': df.child('Max Spot Age (min)').value(),
-            'adif_path':    p.child('ADIF Log').child('File').value().strip(),
         }
 
     def _on_params_changed(self, _root, changes) -> None:
@@ -456,16 +467,6 @@ class MainWindow(QMainWindow):
         """
         self._spot_table.set_max_age(minutes)
         self._band_map.set_max_age(minutes)
-
-    def set_adif_path(self, path: str) -> None:
-        """Sync the ADIF File field in the parameter tree (called after Settings dialog).
-
-        Parameters
-        ----------
-        path : str
-            New ADIF file path to display in the File picker widget.
-        """
-        self._params.child('ADIF Log').child('File').setValue(path)
 
     def set_log_info(self, text: str) -> None:
         """Set the log-info text in the left side of the status bar.
