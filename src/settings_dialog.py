@@ -15,7 +15,8 @@ from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QMessageBox, QPushButton, QRadioButton, QSpinBox, QVBoxLayout, QButtonGroup,
+    QMessageBox, QPushButton, QRadioButton, QSpinBox, QTabWidget, QVBoxLayout,
+    QButtonGroup, QWidget,
 )
 
 from adif_log import RUMLOGNG_DB_PATH
@@ -333,16 +334,43 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
-        layout.addWidget(src_box)
-        layout.addWidget(station_box)
-        layout.addWidget(udp_box)
-        layout.addWidget(udp_note)
-        layout.addWidget(cmd_box)
-        layout.addWidget(cmd_note)
-        layout.addWidget(cty_box)
-        layout.addWidget(fcc_box)
-        layout.addWidget(telnet_box)
-        layout.addStretch()
+        tabs = QTabWidget()
+
+        tab_log = QWidget()
+        tab_log_layout = QVBoxLayout(tab_log)
+        tab_log_layout.addWidget(src_box)
+        tab_log_layout.addWidget(station_box)
+        tab_log_layout.addStretch()
+        tabs.addTab(tab_log, "Log & Station")
+
+        tab_wsjt = QWidget()
+        tab_wsjt_layout = QVBoxLayout(tab_wsjt)
+        tab_wsjt_layout.addWidget(udp_box)
+        tab_wsjt_layout.addWidget(udp_note)
+        tab_wsjt_layout.addStretch()
+        tabs.addTab(tab_wsjt, "WSJT-X")
+
+        tab_cmd = QWidget()
+        tab_cmd_layout = QVBoxLayout(tab_cmd)
+        tab_cmd_layout.addWidget(cmd_box)
+        tab_cmd_layout.addWidget(cmd_note)
+        tab_cmd_layout.addStretch()
+        tabs.addTab(tab_cmd, "Commander")
+
+        tab_cluster = QWidget()
+        tab_cluster_layout = QVBoxLayout(tab_cluster)
+        tab_cluster_layout.addWidget(telnet_box)
+        tab_cluster_layout.addStretch()
+        tabs.addTab(tab_cluster, "DX Cluster")
+
+        tab_db = QWidget()
+        tab_db_layout = QVBoxLayout(tab_db)
+        tab_db_layout.addWidget(cty_box)
+        tab_db_layout.addWidget(fcc_box)
+        tab_db_layout.addStretch()
+        tabs.addTab(tab_db, "Databases")
+
+        layout.addWidget(tabs)
         layout.addWidget(buttons)
 
     # -- helpers ---------------------------------------------------------------
