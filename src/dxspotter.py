@@ -45,6 +45,10 @@ _BAND_RANGES: list[tuple[float, float, str]] = [
     (144000.0, 148000.0, '2m'),
 ]
 
+# Network Status Symbols
+CONNECTED = "\U0001F310"     # 🌐
+CONNECTING = "\U0001F4E1"    # 📡
+DISCONNECTED = "\U0001F6AB" # 🚫
 
 class DXSpotter:
     """Top-level application controller for DX Spotter.
@@ -134,7 +138,7 @@ class DXSpotter:
     # -- radio control --------------------------------------------------------
 
     def _qsy_rigctld(self, band: str) -> None:
-        """Set radio frequency via rigctld (localhost:4532) for the given band."""
+        """Set radio frequency via rigctld (localhost:port) for the given band."""
         band_freqs = self.freqs.get(band, {})
         if not band_freqs:
             print(f"rigctld: no frequency mapping for {band!r}")
@@ -265,9 +269,8 @@ class DXSpotter:
 
     def _apply_settings(self, settings: dict) -> None:
         # Apply a settings dict emitted by MainWindow.settings_changed.
-        # Resubscribes MQTT if topic changed, reloads ADIF if path changed,
-        # clears the table if band/mode/range changed, restarts or reconfigures
-        # the WSJT-X listener as needed.
+        # Resubscribes MQTT if topic changed, clears the table if band/mode/range
+        # changed, restarts or reconfigures the WSJT-X listener as needed.
         assert self.args is not None
 
         old_band = self.args.band
@@ -287,13 +290,6 @@ class DXSpotter:
         if new_topic != self.topic and self._mqtt_listener is not None:
             self.topic = new_topic
             self._mqtt_listener.resubscribe(self.topic)
-
-        # Reload ADIF if the path changed
-        new_adif = settings['adif_path']
-        if new_adif != self._current_adif_path:
-            self._current_adif_path = new_adif
-            print(f"Reloading ADIF: {new_adif}")
-            self.adif_log = ADIFLog(new_adif)
 
         # Clear table and reset counters when display-affecting params change
         if (self.args.band  != old_band  or
@@ -802,9 +798,9 @@ class DXSpotter:
             return
         connected = self._mqtt_listener.connected if self._mqtt_listener is not None else False
         if connected:
-            self.window.set_pskr_status("PSKR: connected", ok=True)
+            self.window.set_pskr_status(f"PSKR: {CONNECTED}", ok=True)
         else:
-            self.window.set_pskr_status("PSKR: connecting…", ok=None)
+            self.window.set_pskr_status(f"PSKR: {DISCONNECTED}", ok=None)
 
     def _update_telnet_status(self) -> None:
         # Poll each cluster's connected property and update the T1/T2 status bar labels.
@@ -812,11 +808,11 @@ class DXSpotter:
             return
         for index, cluster in ((1, self._telnet1), (2, self._telnet2)):
             if cluster is None:
-                self.window.set_telnet_status(index, f"T{index}: off", ok=None)
+                self.window.set_telnet_status(index, f"T{index}: {DISCONNECTED}", ok=None)
             elif cluster.connected:
-                self.window.set_telnet_status(index, f"T{index}: connected", ok=True)
+                self.window.set_telnet_status(index, f"T{index}: {CONNECTED}", ok=True)
             else:
-                self.window.set_telnet_status(index, f"T{index}: connecting…", ok=False)
+                self.window.set_telnet_status(index, f"T{index}: {CONNECTING}", ok=False)
 
     def _on_wsjt_heartbeat(self) -> None:
         """Called from the WSJT-X listener thread on first packet and each incoming Heartbeat."""
@@ -829,7 +825,7 @@ class DXSpotter:
         now = time.time()
         elapsed_hb = now - self._last_wsjt_heartbeat
         if self._last_wsjt_heartbeat == 0.0:
-            self.window.set_wsjt_status("WSJT-X: waiting…", ok=None)
+            self.window.set_wsjt_status(f"WSJT-X: {CONNECTING}", ok=None)
         elif elapsed_hb >= 45:
             self.window.set_wsjt_status(
                 f"WSJT-X: no signal ({int(elapsed_hb)}s)", ok=False
@@ -839,9 +835,9 @@ class DXSpotter:
             no_spot_secs = self._config.wsjt_no_spot_mins * 60
             last_dec = self.wsjt_listener.last_decode_time
             if last_dec == 0.0 or (now - last_dec) > no_spot_secs:
-                self.window.set_wsjt_status("WSJT-X: no decodes", ok='warn')
+                self.window.set_wsjt_status(f"WSJT-X: {CONNECTED}", ok='warn')
             else:
-                self.window.set_wsjt_status("WSJT-X: connected", ok=True)
+                self.window.set_wsjt_status(f"WSJT-X: {CONNECTED}", ok=True)
 
     def _on_call_busy(self, call: str) -> None:
         """Called from WSJT-X listener thread when a CQ caller enters a QSO."""
@@ -1027,7 +1023,7 @@ class DXSpotter:
         self.args = cli
         self.my_grid    = cfg.my_grid
         self._criterion = cfg.criterion
-        print(self.args)
+        # print(self.args)
 
         print("Loading lookup directory")
         cty_path = self.args.cty_plist or str(cty_cache.ensure_cty())
@@ -1064,7 +1060,6 @@ class DXSpotter:
 
         self.window = MainWindow(
             initial_args=self.args,
-            initial_adif_path=adif_path,
             initial_criterion=cfg.criterion,
             initial_display_filter=cfg.display_filter,
         )
@@ -1171,7 +1166,7 @@ class DXSpotter:
         """Load the log from whichever source the config specifies (read-only)."""
         if cfg.log_source == 'rumlogng':
             print("Loading RumLogNG CloudKit database (read-only)")
-            return ADIFLog.from_rumlogng()
+            return ADIFLog.from_rumlogng(config=cfg)
         if cfg.adif_path:
             print("Loading ADIF log")
             return ADIFLog(cfg.adif_path)
@@ -1199,7 +1194,6 @@ class DXSpotter:
         s = self.window._collect_settings()  # noqa: SLF001
         cfg = self._config
         cfg.my_grid = self.my_grid
-        cfg.adif_path = s.get('adif_path', cfg.adif_path)
         cfg.band = s.get('band') or cfg.band
         cfg.mode = s.get('mode', cfg.mode)
         cfg.decode_filter = s.get('wsjt_filter', cfg.decode_filter)
@@ -1355,7 +1349,6 @@ class DXSpotter:
             cfg.adif_path = new_adif
             self._current_adif_path = new_adif
             self.adif_log = self._load_log(cfg)
-            self.window.set_adif_path(new_adif)
             self.window.restyle_spots(self.adif_log, self._criterion)
             self.window.set_log_info(self._log_info_text(cfg, self.adif_log))
             src_label = 'RumLogNG' if new_source == 'rumlogng' else f'ADIF: {new_adif}'
