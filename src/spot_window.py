@@ -41,15 +41,27 @@ COLUMNS = ["DX Call", "SNR", "Country", "DX Grid", "Time", "Age",
            "Range", "QSL"]
 
 # DXCC entity numbers for mainland US and Canada (excluded by 'dxcc_only' filter)
-_US_CANADA_DXCC: frozenset[int] = frozenset({1, 291})
+_US_CANADA_ENTITY_NUMBERS: frozenset[int] = frozenset({1, 291})
 
 AGE_COL      = COLUMNS.index("Age")
 QSL_COL      = COLUMNS.index("QSL")
 CALL_COL     = COLUMNS.index("DX Call")
 REPORTER_COL = COLUMNS.index("Reporter")
+TIME_COL     = COLUMNS.index("Time")
+
 # Separate role for the spot-action dict on CALL_COL (avoids collision with
 # the dxcc/band/mode dict stored in UserRole on the same cell).
 _SPOT_ROLE = Qt.ItemDataRole.UserRole + 1
+
+# Source abbreviations shown in the Src column.
+_SRC_ABBR: dict[str, str] = {
+    'psk': 'P', 'wsjt': 'W', 'telnet1': 'T', 'telnet2': 'T'
+}
+
+# Columns visible in Laptop Mode.
+_LAPTOP_COLS: frozenset[str] = frozenset(
+    {"DX Call", "SNR", "Country", "DX Grid", "Time", "Mode", "Src", "Reporter", "QSL"}
+)
 
 # 3-state award color scheme
 # confirmed = grey (already in the log for this award)
@@ -285,6 +297,7 @@ class SpotTable(QWidget):
         self._dimmed_calls: set[str] = set()
         self._selected_call: str = ''
         self._max_age_secs: int = 30 * 60  # 0 = no expiry
+        self._laptop_mode: bool = False
 
     # -- public interface -----------------------------------------------------
 
@@ -419,6 +432,26 @@ class SpotTable(QWidget):
         self._display_filter = filter_str
         self._apply_display_filter()
 
+    def set_laptop_mode(self, enabled: bool) -> None:
+        """Toggle laptop mode: show only essential columns and abbreviated timestamps.
+
+        Parameters
+        ----------
+        enabled : bool
+            When ``True``, hides non-essential columns and displays only the
+            ``HH:MM:SS`` portion of each spot timestamp.  When ``False``,
+            restores all columns and full timestamps.
+        """
+        self._laptop_mode = enabled
+        for i, name in enumerate(COLUMNS):
+            self.table.setColumnHidden(i, enabled and name not in _LAPTOP_COLS)
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, TIME_COL)
+            if item is not None:
+                full_ts: str = item.data(Qt.ItemDataRole.UserRole) or item.text()
+                item.setText(full_ts[-8:] if enabled else full_ts)
+        self.table.resizeColumnsToContents()
+
     def _apply_display_filter(self) -> None:
         for row in range(self.table.rowCount()):
             self.table.setRowHidden(row, self._row_is_hidden(row))
@@ -435,8 +468,10 @@ class SpotTable(QWidget):
         dxcc = data.get('dxcc', -1)
         band = data.get('band', '')
         mode = data.get('mode', '')
+        if self._display_filter == 'us_canada':
+            return dxcc not in _US_CANADA_ENTITY_NUMBERS
         if self._display_filter == 'dxcc_only':
-            return dxcc in _US_CANADA_DXCC
+            return dxcc in _US_CANADA_ENTITY_NUMBERS
         if self._display_filter == 'unconfirmed':
             adif = self._adif_log
             if adif is None:
@@ -473,7 +508,7 @@ class SpotTable(QWidget):
         for spot in deduped.values():
             self._insert_spot(spot)
         self.table.setUpdatesEnabled(True)
-        self.table.setSortingEnabled(True)
+        self.table.setSortingEnabled(True)   # may reorder rows
         self.table.resizeColumnsToContents()
         self.table.scrollToTop()
 
@@ -519,6 +554,8 @@ class SpotTable(QWidget):
         self.table.insertRow(0)
         row = 0
 
+        src = spot.get('source', 'psk')
+        ts = spot['timestamp']
         range_km = spot.get('range', 0)
         if criterion == 'was':
             qsl_text = _was_qsl_label(status, state, band)
@@ -526,24 +563,24 @@ class SpotTable(QWidget):
             qsl_text = _award_qsl_label(status, criterion, band, conf_list, wkd_list)
 
         values = [
-            spot['call'],                        # DX Call
-            f"{spot['rp']} dB",                  # SNR
-            spot['country'],                     # Country
-            spot['loc'][:6],                     # DX Grid — max 6 chars
-            spot['timestamp'],                   # Time
-            _format_age(int(time.time() - spot['unix_time'])),  # Age
-            str(spot['freq_offset']),            # dHz
-            str(spot['distance']),               # Dist
-            spot['md'],                          # Mode
-            spot['b'],                           # Band
-            spot.get('source', 'psk'),           # Src
-            spot['rc'],                          # Reporter
-            spot['rl'][:6],                      # Rptr Grid — max 6 chars
-            f"{range_km}",                       # Range
-            qsl_text,                            # QSL
+            spot['call'],                                                    # DX Call
+            f"{spot['rp']} dB",                                              # SNR
+            spot['country'],                                                 # Country
+            spot['loc'][:6],                                                 # DX Grid
+            ts[-8:] if self._laptop_mode else ts,                           # Time
+            _format_age(int(time.time() - spot['unix_time'])),              # Age
+            str(spot['freq_offset']),                                        # dHz
+            str(spot['distance']),                                           # Dist
+            spot['md'],                                                      # Mode
+            spot['b'],                                                       # Band
+            _SRC_ABBR.get(src, src[:1].upper() if src else '?'),            # Src
+            spot['rc'],                                                      # Reporter
+            spot['rl'][:6],                                                  # Rptr Grid
+            f"{range_km}",                                                   # Range
+            qsl_text,                                                        # QSL
         ]
 
-        wsjt = spot.get('source') == 'wsjt'
+        wsjt = src == 'wsjt'
         for col, val in enumerate(values):
             item = _AgeItem(val) if col == AGE_COL else QTableWidgetItem(val)
             item.setBackground(bg)
@@ -554,6 +591,8 @@ class SpotTable(QWidget):
                 item.setData(Qt.ItemDataRole.UserRole, spot['unix_time'])
             elif col == CALL_COL:
                 item.setData(Qt.ItemDataRole.UserRole, {'dxcc': dxcc, 'band': band, 'mode': mode})
+            elif col == TIME_COL:
+                item.setData(Qt.ItemDataRole.UserRole, ts)
             self.table.setItem(row, col, item)
 
         # store spot-action dict on CALL_COL using _SPOT_ROLE (UserRole is
@@ -570,7 +609,7 @@ class SpotTable(QWidget):
                 'msg':         spot.get('msg', ''),
                 'delta_t':     spot.get('delta_t', 0.0),
                 'loc':         spot.get('loc', ''),
-                'source':      spot.get('source', 'psk'),
+                'source':      src,
             })
 
         # Re-apply bold if this call was selected before being re-inserted
