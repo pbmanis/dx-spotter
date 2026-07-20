@@ -236,13 +236,14 @@ class CommanderClient:
             print(f"  [RESP] {response!r}")
         return response
 
-    def query_raw(self, command: str) -> str:
-        """Send *command* and return the unparsed response string.
+    # Never called
+    # def query_raw(self, command: str) -> str:
+    #     """Send *command* and return the unparsed response string.
 
-        Convenience wrapper around :meth:`_query` for interactive debugging —
-        lets you see exactly what Commander sends back before any extraction.
-        """
-        return self._query(command)
+    #     Convenience wrapper around :meth:`_query` for interactive debugging —
+    #     lets you see exactly what Commander sends back before any extraction.
+    #     """
+    #     return self._query(command)
 
     def _send(self, command: str) -> None:
         """Send a fire-and-forget command (no response expected from Commander)."""
