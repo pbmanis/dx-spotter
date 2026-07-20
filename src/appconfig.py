@@ -56,7 +56,7 @@ class AppConfig:
         decode; ``'me'`` = only decodes addressed to ``my_call``.
     max_range : int
         Maximum distance in km from the operator's grid to a reporting station
-        (PSK Reporter only).  ``0`` disables the range filter.
+        ("PSK Report"er only).  ``0`` disables the range filter.
     max_spot_age : int
         Remove spot table rows older than this many minutes.  ``0`` keeps spots
         forever.
@@ -107,6 +107,42 @@ class AppConfig:
         TCP port for DX Cluster node 2 (common value: ``7300``).
     telnet2_callsign : str
         Operator callsign sent as a login credential to cluster 2.
+    telnet3_enabled : bool
+        Whether DX Cluster connection 3 is enabled on startup.
+    telnet3_host : str
+        Hostname or IP address of DX Cluster node 3.
+    telnet3_port : int
+        TCP port for DX Cluster node 3 (common value: ``7300``).
+    telnet3_callsign : str
+        Operator callsign sent as a login credential to cluster 3.
+    telnet4_enabled : bool
+        Whether DX Cluster connection 4 is enabled on startup.
+    telnet4_host : str
+        Hostname or IP address of DX Cluster node 4.
+    telnet4_port : int
+        TCP port for DX Cluster node 4 (common value: ``7300``).
+    telnet4_callsign : str
+        Operator callsign sent as a login credential to cluster 4.
+    telnet_us_ca_spotters_only : bool
+        When ``True`` (default), DX Cluster spots are shown only when the
+        reporting/spotting station is located in the US or Canada (ADIF DXCC
+        291 or 1).  Spots from all other spotters are silently discarded.
+        Set to ``False`` to show telnet-cluster spots from any spotter.
+    pskr_enabled : bool
+        Whether to connect to PSK Reporter via MQTT on startup.
+    pskr_host : str
+        MQTT broker hostname for PSK Reporter (default
+        ``'mqtt.pskreporter.info'``).
+    pskr_port : int
+        MQTT broker port for PSK Reporter (default ``1883``).
+    pskr_service_name : str
+        Free-text label for the PSK Reporter connection, shown in the
+        Settings dialog for reference only; not used by the MQTT protocol.
+    pskr_reshow_secs : int
+        Minimum number of seconds between successive table entries for the
+        same callsign from PSK Reporter.  A callsign heard again within this
+        window is silently dropped, mirroring :attr:`wsjt_reshow_secs`.
+        Default is ``300`` (5 minutes).
     """
 
     udp_address: str = '224.0.0.1'
@@ -141,6 +177,20 @@ class AppConfig:
     telnet2_host: str = ''
     telnet2_port: int = 7300
     telnet2_callsign: str = ''
+    telnet3_enabled: bool = False
+    telnet3_host: str = ''
+    telnet3_port: int = 7300
+    telnet3_callsign: str = ''
+    telnet4_enabled: bool = False
+    telnet4_host: str = ''
+    telnet4_port: int = 7300
+    telnet4_callsign: str = ''
+    telnet_us_ca_spotters_only: bool = True
+    pskr_enabled: bool = True
+    pskr_host: str = 'mqtt.pskreporter.info'
+    pskr_port: int = 1883
+    pskr_service_name: str = 'PSK Reporter'
+    pskr_reshow_secs: int = 300
 
 
 def config_path() -> Path:
@@ -233,6 +283,26 @@ def load_config() -> AppConfig:
     cfg.telnet2_host = str(t2.get('host', cfg.telnet2_host))
     cfg.telnet2_port = int(t2.get('port', cfg.telnet2_port))
     cfg.telnet2_callsign = str(t2.get('callsign', cfg.telnet2_callsign))
+    t3 = telnet.get('cluster3', {})
+    cfg.telnet3_enabled = bool(t3.get('enabled', cfg.telnet3_enabled))
+    cfg.telnet3_host = str(t3.get('host', cfg.telnet3_host))
+    cfg.telnet3_port = int(t3.get('port', cfg.telnet3_port))
+    cfg.telnet3_callsign = str(t3.get('callsign', cfg.telnet3_callsign))
+    t4 = telnet.get('cluster4', {})
+    cfg.telnet4_enabled = bool(t4.get('enabled', cfg.telnet4_enabled))
+    cfg.telnet4_host = str(t4.get('host', cfg.telnet4_host))
+    cfg.telnet4_port = int(t4.get('port', cfg.telnet4_port))
+    cfg.telnet4_callsign = str(t4.get('callsign', cfg.telnet4_callsign))
+    cfg.telnet_us_ca_spotters_only = bool(
+        telnet.get('us_ca_spotters_only', cfg.telnet_us_ca_spotters_only)
+    )
+
+    pskr = data.get('pskr', {})
+    cfg.pskr_enabled = bool(pskr.get('enabled', cfg.pskr_enabled))
+    cfg.pskr_host = str(pskr.get('host', cfg.pskr_host))
+    cfg.pskr_port = int(pskr.get('port', cfg.pskr_port))
+    cfg.pskr_service_name = str(pskr.get('service_name', cfg.pskr_service_name))
+    cfg.pskr_reshow_secs = int(pskr.get('reshow_secs', cfg.pskr_reshow_secs))
 
     return cfg
 
@@ -286,6 +356,9 @@ commander_port         = {cfg.commander_port}
 commander_timeout      = {cfg.commander_timeout}
 commander_verify_delay = {cfg.commander_verify_delay}
 
+[telnet]
+us_ca_spotters_only = {"true" if cfg.telnet_us_ca_spotters_only else "false"}
+
 [telnet.cluster1]
 enabled  = {"true" if cfg.telnet1_enabled else "false"}
 host     = "{cfg.telnet1_host}"
@@ -297,5 +370,24 @@ enabled  = {"true" if cfg.telnet2_enabled else "false"}
 host     = "{cfg.telnet2_host}"
 port     = {cfg.telnet2_port}
 callsign = "{cfg.telnet2_callsign}"
+
+[telnet.cluster3]
+enabled  = {"true" if cfg.telnet3_enabled else "false"}
+host     = "{cfg.telnet3_host}"
+port     = {cfg.telnet3_port}
+callsign = "{cfg.telnet3_callsign}"
+
+[telnet.cluster4]
+enabled  = {"true" if cfg.telnet4_enabled else "false"}
+host     = "{cfg.telnet4_host}"
+port     = {cfg.telnet4_port}
+callsign = "{cfg.telnet4_callsign}"
+
+[pskr]
+enabled      = {"true" if cfg.pskr_enabled else "false"}
+host         = "{cfg.pskr_host}"
+port         = {cfg.pskr_port}
+service_name = "{cfg.pskr_service_name}"
+reshow_secs  = {cfg.pskr_reshow_secs}
 """
     path.write_text(content, encoding='utf-8')
