@@ -4,7 +4,7 @@ Manages a single Paho MQTT connection to the PSK Reporter broker, parses
 incoming JSON payloads, and forwards raw spot dicts to a caller-supplied
 callback.
 
-The caller is responsible for building the subscription topic and enriching
+The caller is responsible for building the subscription topic and establishing
 raw payloads (DXCC lookup, distance computation, etc.) before passing them to
 the Qt spot table.
 
