@@ -387,7 +387,7 @@ class WsjtxListener:
             + self._encode_utf8('')     # revision
         )
         self._send(self._build_msg(0, payload))
-        print("WSJT-X: heartbeat sent")
+        # print("WSJT-X: heartbeat sent")
 
     def reply_to_decode(self, time_ms: int, snr: int, df: int,
                         mode: str, message: str, delta_t: float = 0.0,
@@ -495,17 +495,18 @@ class WsjtxListener:
         """
         self._call_times.clear()
 
-    def switch_configuration(self, name: str) -> None:
-        """Send Switch Configuration (type 14) to WSJT-X.
+    # Never called
+    # def switch_configuration(self, name: str) -> None:
+    #     """Send Switch Configuration (type 14) to WSJT-X.
 
-        Parameters
-        ----------
-        name : str
-            Name of the WSJT-X configuration preset to activate (must match
-            a name defined in WSJT-X Settings → Configurations).
-        """
-        self._send(self._build_msg(14, self._encode_utf8(name)))
-        print(f"WSJT-X: requested Switch Configuration → '{name}'")
+    #     Parameters
+    #     ----------
+    #     name : str
+    #         Name of the WSJT-X configuration preset to activate (must match
+    #         a name defined in WSJT-X Settings → Configurations).
+    #     """
+    #     self._send(self._build_msg(14, self._encode_utf8(name)))
+    #     print(f"WSJT-X: requested Switch Configuration → '{name}'")
 
     @staticmethod
     def _pack_qcolor(r: int, g: int, b: int, valid: bool = True) -> bytes:
@@ -617,7 +618,7 @@ class WsjtxListener:
                 if self.on_heartbeat:
                     self.on_heartbeat()
                 name = self._MSG_NAMES.get(mtype, f'type{mtype}')
-                print(f"WSJT-X ← {name} (type={mtype}  {len(data)}B  id={client_id!r})")
+                # print(f"WSJT-X ← {name} (type={mtype}  {len(data)}B  id={client_id!r})")
 
             elif mtype == self._MSG_STATUS:
                 self._dial_freq = r.uint64()
