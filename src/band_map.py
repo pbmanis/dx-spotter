@@ -13,8 +13,10 @@ the same payload dict as :class:`~spot_window.SpotTable`, so the
 existing :meth:`~dxspotter.DXSpotter._on_spot_activated` routing
 (WSJT-X for digital, Commander for CW/SSB) applies without change.
 """
+
 from __future__ import annotations
 
+from dataclasses import dataclass
 import time
 from typing import TYPE_CHECKING
 
@@ -25,19 +27,39 @@ from PyQt6.QtWidgets import QHBoxLayout, QVBoxLayout, QPushButton, QWidget
 if TYPE_CHECKING:
     from adif_log import ADIFLog
 
-
-# Mode → plot color (matches on_message colorама assignments)
-_MODE_COLORS: dict[str, str] = {
-    "CW":  "#00cc00",   # green
-    "FT8": "#4488ff",   # blue
-    "FT4": "#88bbff",   # light-blue
-    "FT2": "#00ffff",   # cyan
-    "SSB": "#ff44ff",   # magenta
-}
 _DEFAULT_COLOR: str = "#ffff00"
 
 _LINE_WIDTH_NORMAL: int = 1
 _LINE_WIDTH_AWARD: int = 3
+
+# Canonical mode -> RGB color, shared by the plot-line palette (_MODE_COLORS),
+# the submode zone shading (_SUBMODE_BRUSH_COLORS), and the mode-zoom button
+# backgrounds (_MODE_BUTTON_COLORS) so all three stay visually consistent.
+_MODE_RGB: dict[str, tuple[int, int, int]] = {
+    "All":  (255, 255, 0),    # yellow
+    "CW":   (0, 204, 0),      # green
+    "FT8":  (68, 136, 255),   # blue
+    "FT4":  (110, 165, 255),  # medium blue
+    "FT2":  (160, 200, 255),  # pale blue
+    "SSB":  (255, 68, 255),   # magenta
+    "RTTY": (255, 136, 0),    # orange
+}
+
+# Mode → plot color (matches on_message colorама assignments)
+_MODE_COLORS: dict[str, str] = {
+    mode: f"#{r:02x}{g:02x}{b:02x}" for mode, (r, g, b) in _MODE_RGB.items()
+}
+
+# RGBA fill colors for mode-zone shading (very low alpha keeps spots legible).
+_SUBMODE_ALPHA = 25
+_SUBMODE_BRUSH_COLORS: dict[str, tuple[int, int, int, int]] = {
+    mode: (*rgb, _SUBMODE_ALPHA) for mode, rgb in _MODE_RGB.items() if mode != "All"
+}
+_BTN_ALPHA = 128
+_MODE_BUTTON_COLORS: dict[str, tuple[int, int, int, int]] = {
+    mode: (*rgb, _BTN_ALPHA) for mode, rgb in _MODE_RGB.items()
+}
+
 
 # Stylesheet for the mode-zoom buttons (dark theme, flat).
 _BTN_STYLE: str = (
@@ -50,34 +72,190 @@ _BTN_STYLE: str = (
     "QPushButton:disabled { color: #505060; border-color: #303040; } "
 )
 
+
+@dataclass
+class ButtonStyle:
+    """Encapsulates a QPushButton's style, color and tooltip for a mode-zoom button.
+
+    Parameters
+    ----------
+    style : str
+        CSS stylesheet string.
+    tooltip : str
+        Tooltip text.
+    """
+
+    button: QPushButton
+    name: str
+    tooltip: str
+    style: str = _BTN_STYLE
+
+    def __post_init__(self) -> None:
+        self.button.setFlat(True)
+        self.button.setFixedHeight(22)
+        self.button.setStyleSheet(self.style)
+        self.button.setToolTip(self.tooltip)
+
+    def set(self, style: str, tooltip: str) -> None:
+        """Update the style and tooltip.
+
+        Parameters
+        ----------
+        style : str
+            CSS stylesheet string.
+        tooltip : str
+            Tooltip text.
+        """
+        self.style = style
+        self.tooltip = tooltip
+        self.button.setStyleSheet(self.style)
+        self.button.setToolTip(self.tooltip)
+
+    def update_style(
+        self,
+        color: tuple[int, int, int, int],
+        border: str = "border: 2px solid #404040; border-radius: 3px",
+    ) -> None:
+        """Update the button's background color and border.
+
+        Parameters
+        ----------
+        color : tuple[int, int, int, int]
+            RGBA color tuple.
+        border : str, optional
+            CSS border string (default is a dark gray border with rounded corners).
+        """
+        self.style = f"background-color: rgba{str(color)}; {border}; color: white;"
+        self.button.setStyleSheet(self.style)
+
+
 # Per-band frequency windows (kHz) for mode-group zoom buttons and zone shading.
 # None marks mode groups not present on a given band (e.g. no SSB on WARC bands).
 # FT windows are derived from the actual dial frequencies in DXSpotter.freqs
 # (FT8/FT4/FT2 per band) ± 1 kHz so the view is tight with minimal blank space.
 # CW and SSB windows follow IARU Region 2 sub-band boundaries.
-_BAND_ZOOM_RANGES: dict[str, dict[str, tuple[float, float] | None]] = {
-    '160m': {'CW': (1800.0, 1840.0), 'FT': (1839.0, 1841.0), 'SSB': (1843.0, 2000.0)},
-    '80m':  {'CW': (3500.0, 3570.0), 'FT': (3572.0, 3579.0), 'SSB': (3700.0, 4000.0)},
-    '40m':  {'CW': (7000.0, 7044.0), 'FT': (7046.5, 7075.0), 'SSB': (7100.0, 7300.0)},
-    '30m':  {'CW': (10100.0, 10133.0), 'FT': (10135.0, 10145.0), 'SSB': None},
-    '20m':  {'CW': (14000.0, 14070.0), 'FT': (14073.0, 14085.0), 'SSB': (14100.0, 14350.0)},
-    '17m':  {'CW': (18068.0, 18098.0), 'FT': (18099.0, 18109.0), 'SSB': (18110.0, 18168.0)},
-    '15m':  {'CW': (21000.0, 21070.0), 'FT': (21073.0, 21078.0), 'SSB': (21148.0, 21450.0)},
-    '12m':  {'CW': (24890.0, 24912.0), 'FT': (24914.0, 24920.0), 'SSB': (24930.0, 24990.0)},
-    '10m':  {'CW': (28000.0, 28070.0), 'FT': (28073.0, 28078.0), 'SSB': (28300.0, 29700.0)},
-    '6m':   {'CW': (50000.0, 50110.0), 'FT': (50312.0, 50319.0), 'SSB': (50100.0, 50310.0)},
-    '2m':   {'CW': (144000.0, 144100.0), 'FT': (144173.0, 144178.0), 'SSB': (144150.0, 144300.0)},
+_BAND_MODE_ZOOM_RANGES: dict[str, dict[str, tuple[float, float] | None]] = {
+    "160m": {
+        "CW": (1800.0, 1840.0),
+        "RTTY": (1800.0, 1840.0),
+        "FT8": (1839.0, 1841.0),
+        "FT4": (1836.0, 1840.0),   # dial 1838 kHz +/- 2
+        "FT2": (1843.0, 1847.0),               # not used on 160m
+        "SSB": (1843.0, 2000.0),
+    },
+    "80m": {
+        "CW": (3500.0, 3570.0),
+        "RTTY": (3560.0, 3600.0),
+        "FT8": (3571.0, 3574.0),
+        "FT4": (3574.0, 3578.0),   # dial 3575 kHz + 4
+        "FT2": (3578.0, 3582.0),   # dial 3577 kHz +/- 1
+        "SSB": (3700.0, 4000.0),
+    },
+    "40m": {
+        "CW": (7000.0, 7044.0),
+        "RTTY": (7025.0, 7100.0),
+        "FT8": (7073.0, 7079.0),
+        "FT4": (7046.5, 7051.5),   # dial 7047.5 kHz + 3
+        "FT2": (7061.0, 7065.0),   # dial 7062 kHz +/- 1
+        "SSB": (7100.0, 7300.0),
+    },
+    "30m": {
+        "CW": (10100.0, 10133.0),
+        "RTTY": (10120.0, 10150.0),
+        "FT8": (10134.0, 10145.0),
+        "FT4": (10139.0, 10143.0),  # dial 10140 kHz +/- 1
+        "FT2": (10141.0, 10145.0),  # dial 10144 kHz +/- 1
+        "SSB": None,
+    },
+    "20m": {
+        "CW": (14000.0, 14070.0),
+        "RTTY": (14080.5, 14150.0),
+        "FT8": (14073.0, 14085.0),
+        "FT4": (14079.0, 14083.0),  # dial 14080 kHz +/- 1
+        "FT2": (14083.0, 14087.0),  # dial 14084 kHz +/- 1
+        "SSB": (14100.0, 14350.0),
+    },
+    "17m": {
+        "CW": (18068.0, 18098.0),
+        "RTTY": (18100.0, 18109.5),
+        "FT8": (18099.0, 18109.0),
+        "FT4": (18103.0, 18107.0),  # dial 18104 kHz +/- 1
+        "FT2": (18107.0, 18110.0),  # dial 18108 kHz +/- 1
+        "SSB": (18110.0, 18168.0),
+    },
+    "15m": {
+        "CW": (21000.0, 21070.0),
+        "RTTY": (21080.5, 21150.0),
+        "FT8": (21073.0, 21078.0),
+        "FT4": (21139.0, 21143.0),  # dial 21140 kHz +/- 1
+        "FT2": (21143.0, 21147.0),  # dial 21144 kHz +/- 1
+        "SSB": (21148.0, 21450.0),
+    },
+    "12m": {
+        "CW": (24890.0, 24912.0),
+        "RTTY": (24910.0, 24929.5),
+        "FT8": (24914.0, 24920.0),
+        "FT4": (24918.0, 24922.0),  # dial 24919 kHz +/- 1
+        "FT2": (24922.0, 24925.0),                # not used on 12m
+        "SSB": (24930.0, 24990.0),
+    },
+    "10m": {
+        "CW": (28000.0, 28070.0),
+        "RTTY": (28080.5, 28200.0),
+        "FT8": (28073.0, 28078.0),
+        "FT4": (28179.0, 28183.0),  # dial 28180 kHz +/- 1
+        "FT2": (28183.0, 28187.0),  # dial 28184 kHz +/- 1
+        "SSB": (28300.0, 29700.0),
+    },
+    "6m": {
+        "CW": (50000.0, 50110.0),
+        "RTTY": (50050.0, 50100.0),
+        "FT8": (50312.0, 50317.0),
+        "FT4": (50317.0, 50323.0),  # dial 50318 kHz +/- 1
+        "FT2": (50327.0, 50331.0),  # dial 50316 kHz +/- 1
+        "SSB": (50100.0, 50310.0),
+    },
+    "2m": {
+        "CW": (144000.0, 144100.0),
+        "RTTY": (144050.0, 144100.0),
+        "FT8": (144173.0, 144178.0),
+        "FT4": (144170.0, 144174.0),   
+        "FT2": (144176.0, 144178.0),     # dial 144177 kHz +/- 1
+        "SSB": (144150.0, 144300.0),
+    },
 }
 
-# RGBA fill colors for mode-zone shading (very low alpha keeps spots legible).
-_ZONE_BRUSH_COLORS: dict[str, tuple[int, int, int, int]] = {
-    'CW':  (0,   204, 0,   25),
-    'FT':  (68,  136, 255, 25),
-    'SSB': (255, 68,  255, 25),
+# Mode bandwiths to calculate the frequency
+# range nominally occupied by each spot.
+_MODE_BANDWIDTHS: dict[str, float] = {
+    "CW": 0.1,
+    "FT8": 0.05,
+    "FT4": 0.1,
+    "FT2": 2.0,
+    "SSB": 3.0,
+    "RTTY": 0.5,
 }
 
-# DXCC entity numbers for mainland US and Canada — matches spot_window._US_CANADA_DXCC
-_US_CANADA_DXCC: frozenset[int] = frozenset({1, 291})
+# frequency offsets from nominal with SSB
+# based on USB/LSB as customary for each band.
+_SSB_FREQ_OFFSETS: dict[str, float] = {
+    "160m": -3.0,  # lsb
+    "80m": -3.0,
+    "40m": -3.0,
+    "30m": 0.0,  # no ssb here.
+    "20m": +3.0,
+    "17m": +3.0,
+    "15m": +3.0,
+    "12m": +3.0,
+    "10m": +3.0,
+    "6m": +3.0,
+    "2m": +3.0,
+}
+
+
+# DXCC entity number for mainland US, excluded by the 'dxcc_only' filter —
+# matches spot_window._MAINLAND_US_DXCC.
+_MAINLAND_US_DXCC: int = 291
 
 
 class BandMap(QWidget):
@@ -121,33 +299,24 @@ class BandMap(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
 
-        # -- mode zoom button row -----------------------------------------
+        # -- subband zoom button row -----------------------------------------
         btn_row = QWidget()
         btn_layout = QHBoxLayout(btn_row)
         btn_layout.setContentsMargins(4, 2, 4, 2)
         btn_layout.setSpacing(4)
-
-        self._btn_all = QPushButton("All")
-        self._btn_cw  = QPushButton("CW")
-        self._btn_ft  = QPushButton("FT")
-        self._btn_ssb = QPushButton("SSB")
-
-        for btn in (self._btn_all, self._btn_cw, self._btn_ft, self._btn_ssb):
-            btn.setFlat(True)
-            btn.setFixedHeight(22)
-            btn.setStyleSheet(_BTN_STYLE)
-            btn_layout.addWidget(btn)
-        btn_layout.addStretch()
-
-        self._btn_all.setToolTip("Show all spots (auto-range)")
-        self._btn_cw.setToolTip("Zoom to CW sub-band")
-        self._btn_ft.setToolTip("Zoom to FT8 / FT4 / FT2 sub-band")
-        self._btn_ssb.setToolTip("Zoom to SSB sub-band")
-
-        self._btn_all.clicked.connect(lambda: self._zoom_to('all'))
-        self._btn_cw.clicked.connect(lambda: self._zoom_to('CW'))
-        self._btn_ft.clicked.connect(lambda: self._zoom_to('FT'))
-        self._btn_ssb.clicked.connect(lambda: self._zoom_to('SSB'))
+        self.mode_buttons: dict[str, ButtonStyle] = {}
+        for mode in ("All", "CW", "FT8", "FT4", "FT2", "SSB", "RTTY"):
+            btn = ButtonStyle(
+                QPushButton(mode),
+                name=mode,
+                style=_BTN_STYLE,
+                tooltip=f"Zoom to {mode} sub-band",
+            )
+            btn.update_style(_MODE_BUTTON_COLORS[mode])
+            btn.button.clicked.connect(lambda checked, m=mode: self._zoom_to(m))
+            btn_layout.addWidget(btn.button)
+            self.mode_buttons[mode] = btn
+        btn_layout.addStretch()  # cluster the buttons on the left
 
         layout.addWidget(btn_row)
 
@@ -155,7 +324,7 @@ class BandMap(QWidget):
         self._plot = pg.PlotWidget()
         self._plot.setBackground("#1a1a2e")
         self._plot.showGrid(x=True, y=True, alpha=0.25)
-        self._plot.setLabel("left",   "SNR", units="dB",  color="#c0c0c0")
+        self._plot.setLabel("left", "SNR", units="dB", color="#c0c0c0")
         self._plot.setLabel("bottom", "Frequency", units="kHz", color="#c0c0c0")
         for axis in ("left", "bottom"):
             ax = self._plot.getAxis(axis)
@@ -184,14 +353,14 @@ class BandMap(QWidget):
 
         self._spot_cache: dict[str, dict] = {}
         self._pending: list[dict] = []
-        self._plot_items: list = []   # pg items added per redraw cycle
-        self._zone_items: list = []   # pg items added by _update_zones
+        self._plot_items: list = []  # pg items added per redraw cycle
+        self._submode_items: list = []  # pg items added by _update_zones
         self._band: str | None = None
         self._adif_log: ADIFLog | None = None
         self._criterion: str = "mixed"
         self._display_filter: str = "all"
         self._max_age_secs: int = 30 * 60
-
+        self.freq_map = []  # List of frequencies "in use" to help select an open spot.
         self._plot.scene().sigMouseClicked.connect(self._on_mouse_clicked)
 
         flush_timer = QTimer(self)
@@ -235,7 +404,7 @@ class BandMap(QWidget):
             color="#c0c0c0",
             size="9pt",
         )
-        self._plot.enableAutoRange(axis='x')
+        self._plot.enableAutoRange(axis="x")
         self._plot.setYRange(-24, 26, padding=0)
         self._update_zones()
         self._redraw()
@@ -291,13 +460,13 @@ class BandMap(QWidget):
     def _update_zones(self) -> None:
         # Replace shaded LinearRegionItem decorations for the current band.
         # Regions are purely visual (movable=False, no mouse interaction).
-        for item in self._zone_items:
+        for item in self._submode_items:
             self._plot.removeItem(item)
-        self._zone_items.clear()
+        self._submode_items.clear()
 
-        band_ranges = _BAND_ZOOM_RANGES.get(self._band or '', {})
+        band_ranges = _BAND_MODE_ZOOM_RANGES.get(self._band or "", {})
 
-        for mode, (r, g, b, a) in _ZONE_BRUSH_COLORS.items():
+        for mode, (r, g, b, a) in _SUBMODE_BRUSH_COLORS.items():
             rng = band_ranges.get(mode)
             if rng is None:
                 continue
@@ -314,22 +483,25 @@ class BandMap(QWidget):
                 line.setMovable(False)
                 line.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
             self._plot.addItem(region)
-            self._zone_items.append(region)
+            self._submode_items.append(region)
 
-        # Enable/disable buttons to match the current band's available zones.
-        self._btn_cw.setEnabled(band_ranges.get('CW') is not None)
-        self._btn_ft.setEnabled(band_ranges.get('FT') is not None)
-        self._btn_ssb.setEnabled(band_ranges.get('SSB') is not None)
+        # Enable/disable every mode button to match the current band's
+        # available zoom ranges.  "All" has no per-band range and always
+        # stays enabled (it resets to auto-range).
+        for mode, btn in self.mode_buttons.items():
+            if mode == "All":
+                continue
+            btn.button.setEnabled(band_ranges.get(mode) is not None)
 
     def _zoom_to(self, mode: str) -> None:
         # Zoom the x-axis to the frequency window for mode ('CW', 'FT', 'SSB')
-        # or restore auto-range ('all').
-        if mode == 'all':
-            self._plot.enableAutoRange(axis='x')
+        # or restore auto-range ('All').
+        if mode.lower() == "all":
+            self._plot.enableAutoRange(axis="x")
             return
         if self._band is None:
             return
-        rng = _BAND_ZOOM_RANGES.get(self._band, {}).get(mode)
+        rng = _BAND_MODE_ZOOM_RANGES.get(self._band, {}).get(mode)
         if rng is None:
             return
         lo, hi = rng
@@ -338,7 +510,7 @@ class BandMap(QWidget):
     # -- private: flush & draw -------------------------------------------------
 
     def _flush_and_redraw(self) -> None:
-        # Merge pending into cache, then expire stale entries.
+        # Merge pending spots into cache, then expire stale entries.
         # Only redraws when something actually changed.
         now = time.time()
         changed = bool(self._pending)
@@ -374,9 +546,7 @@ class BandMap(QWidget):
         band_spots = [
             s
             for s in self._spot_cache.values()
-            if s.get("b") == self._band
-            and s.get("abs_freq_hz", 0) > 0
-            and self._spot_is_visible(s)
+            if s.get("b") == self._band and s.get("abs_freq_hz", 0) > 0 and self._spot_is_visible(s)
         ]
         if not band_spots:
             return
@@ -387,18 +557,34 @@ class BandMap(QWidget):
                 snr = float(str(spot.get("rp", "0")).lstrip("+"))
             except ValueError:
                 snr = 0.0
-            mode  = spot.get("md", "").upper()
-            call  = spot["call"]
+            mode = spot.get("md", "").upper()
+            call = spot["call"]
             color = _MODE_COLORS.get(mode, _DEFAULT_COLOR)
             width = self._award_line_width(spot)
 
             line = pg.PlotCurveItem(
                 x=[freq_khz, freq_khz],
-                y=[-24.0, snr],   # bars always start at the plot floor
+                y=[-24.0, snr],  # bars always start at the plot floor
                 pen=pg.mkPen(color=color, width=width),
             )
             self._plot.addItem(line)
             self._plot_items.append(line)
+
+            # calculate bandwidth for the mode, default to 0 if not found
+            bandwidth_value = _MODE_BANDWIDTHS.get(mode, 0)
+            bandwidth_offset = _SSB_FREQ_OFFSETS.get(self._band, 0) if mode == "SSB" else 0
+            freq_khz += bandwidth_offset  # adjust frequency for SSB offset if applicable
+            f_low_high = (freq_khz - bandwidth_value / 2, freq_khz + bandwidth_value / 2)
+            bandwidth = pg.LinearRegionItem(
+                values=f_low_high,
+                orientation=pg.LinearRegionItem.Vertical,
+                movable=False,
+                brush=pg.mkBrush(color + "40"),  # semi-transparent fill
+                pen=pg.mkPen(None),  # no border
+            )
+            self._plot.addItem(bandwidth)
+            self._plot_items.append(bandwidth)
+            self.freq_map.append(list(f_low_high))
 
             # angle=75 → 15° off vertical; anchor=(0,1) places the bottom of the
             # pre-rotation bbox at (freq_khz, snr) so the label rises from the
@@ -418,17 +604,13 @@ class BandMap(QWidget):
         mode = spot.get("md", "")
         call = spot.get("call", "")
         if self._display_filter == "dxcc_only":
-            return dxcc not in _US_CANADA_DXCC
+            return dxcc != _MAINLAND_US_DXCC
         if self._display_filter == "unconfirmed":
             adif = self._adif_log
             if adif is None:
                 return True
             if self._criterion == "was":
-                if dxcc == 291:
-                    state  = adif.call_state(call)
-                    status = adif.was_status(state, band)
-                else:
-                    status = "n/a"
+                status = adif.was_status(adif.resolve_was_state(call, dxcc), band)
             elif adif.mode_matches_criterion(mode, self._criterion):
                 status = adif.award_status(dxcc, band, self._criterion)
             else:
@@ -442,18 +624,14 @@ class BandMap(QWidget):
         adif = self._adif_log
         if adif is None:
             return _LINE_WIDTH_NORMAL
-        dxcc      = spot.get("dxcc", -1)
-        band      = spot.get("b", "")
-        mode      = spot.get("md", "")
-        call      = spot.get("call", "")
+        dxcc = spot.get("dxcc", -1)
+        band = spot.get("b", "")
+        mode = spot.get("md", "")
+        call = spot.get("call", "")
         criterion = self._criterion
 
         if criterion == "was":
-            if dxcc == 291:
-                state  = adif.call_state(call)
-                status = adif.was_status(state, band)
-            else:
-                status = "n/a"
+            status = adif.was_status(adif.resolve_was_state(call, dxcc), band)
         elif adif.mode_matches_criterion(mode, criterion):
             status = adif.award_status(dxcc, band, criterion)
             if status == "new" and criterion == "5bd":
@@ -473,30 +651,30 @@ class BandMap(QWidget):
         vb = self._plot.plotItem.vb
         if not vb.sceneBoundingRect().contains(event.scenePos()):
             return
-        view_pos  = vb.mapSceneToView(event.scenePos())
-        freq_khz  = view_pos.x()
+        view_pos = vb.mapSceneToView(event.scenePos())
+        freq_khz = view_pos.x()
 
         # Convert 10 screen pixels to a kHz tolerance in data space.
-        p2 = vb.mapSceneToView(
-            QPointF(event.scenePos().x() + 10.0, event.scenePos().y())
-        )
+        p2 = vb.mapSceneToView(QPointF(event.scenePos().x() + 10.0, event.scenePos().y()))
         tolerance = abs(p2.x() - freq_khz)
 
         spot = self._nearest_spot(freq_khz, tolerance)
         if spot is None:
             return
-        self.spot_activated.emit({
-            "call":        spot["call"],
-            "md":          spot.get("md", ""),
-            "b":           spot.get("b", ""),
-            "freq_offset": spot.get("freq_offset", 0),
-            "unix_time":   spot.get("unix_time", 0.0),
-            "rp":          spot.get("rp", "0"),
-            "msg":         spot.get("msg", ""),
-            "delta_t":     spot.get("delta_t", 0.0),
-            "loc":         spot.get("loc", ""),
-            "source":      spot.get("source", "psk"),
-        })
+        self.spot_activated.emit(
+            {
+                "call": spot["call"],
+                "md": spot.get("md", ""),
+                "b": spot.get("b", ""),
+                "freq_offset": spot.get("freq_offset", 0),
+                "unix_time": spot.get("unix_time", 0.0),
+                "rp": spot.get("rp", "0"),
+                "msg": spot.get("msg", ""),
+                "delta_t": spot.get("delta_t", 0.0),
+                "loc": spot.get("loc", ""),
+                "source": spot.get("source", "psk"),
+            }
+        )
 
     def _nearest_spot(self, freq_khz: float, tolerance_khz: float) -> dict | None:
         # Return the cache entry closest to freq_khz within tolerance_khz, or None.
