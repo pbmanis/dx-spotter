@@ -13,9 +13,13 @@ SPOT_AGE_COL, QSL_COL, CALL_COL : int
     Pre-computed column indices for the Age, QSL, and DX Call columns.
 AWARD_COLORS : dict[str, tuple[str, str]]
     Maps award status → ``(background_hex, foreground_hex)`` color pairs.
-_US_CANADA_DXCC : frozenset[int]
-    ADIF DXCC entity numbers for mainland US (291) and Canada (1), excluded
-    by the ``'dxcc_only'`` display filter.
+_US_CANADA_AK_HI_DXCC : frozenset[int]
+    ADIF DXCC entity numbers for mainland US (291), Canada (1), Alaska (6),
+    and Hawaii (110) — the entities shown by the ``'us_canada'`` display
+    filter.
+_MAINLAND_US_DXCC : int
+    ADIF DXCC entity number for mainland US (291), excluded by the
+    ``'dxcc_only'`` display filter.
 """
 from __future__ import annotations
 
@@ -40,8 +44,12 @@ COLUMNS = ["DX Call", "SNR", "Country", "DX Grid", "Time", "Spot Age",
            "dHz", "Dist", "Mode", "Band", "Src", "Reporter", "Rptr Grid",
            "Range", "QSL"]
 
-# DXCC entity numbers for mainland US and Canada (excluded by 'dxcc_only' filter)
-_US_CANADA_ENTITY_NUMBERS: frozenset[int] = frozenset({1, 291})
+# DXCC entity numbers shown by the 'us_canada' filter: Canada, mainland US,
+# Alaska, and Hawaii.
+_US_CANADA_AK_HI_DXCC: frozenset[int] = frozenset({1, 6, 110, 291})
+
+# DXCC entity number excluded by the 'dxcc_only' filter: mainland US only.
+_MAINLAND_US_DXCC: int = 291
 
 SPOT_AGE_COL = COLUMNS.index("Spot Age")
 QSL_COL      = COLUMNS.index("QSL")
@@ -56,7 +64,8 @@ _SPOT_ROLE = Qt.ItemDataRole.UserRole + 1
 
 # Source abbreviations shown in the Src column.
 _SRC_ABBR: dict[str, str] = {
-    'psk': 'P', 'wsjt': 'W', 'telnet1': 'T', 'telnet2': 'T'
+    'psk': 'P', 'wsjt': 'W',
+    'telnet1': 'T1', 'telnet2': 'T2', 'telnet3': 'T3', 'telnet4': 'T4',
 }
 
 # Columns visible in Laptop Mode.
@@ -224,15 +233,16 @@ class SpotTable(QWidget):
     spot_activated : pyqtSignal(dict)
         Emitted when the user double-clicks a spot row.  The dict contains
         the spot-action fields stored in ``_SPOT_ROLE`` on the DX Call cell.
-    spots_expired : pyqtSignal(int, int, int, int)
-        Emitted after the age-expiry pass with
-        ``(psk_removed, wsjt_removed, telnet1_removed, telnet2_removed)``
+    spots_expired : pyqtSignal(int, int, int, int, int, int)
+        Emitted after the age-expiry pass with ``(psk_removed, wsjt_removed,
+        telnet1_removed, telnet2_removed, telnet3_removed, telnet4_removed)``
         counts so :class:`~dxspotter.DXSpotter` can decrement its counters.
     """
 
     spot_activated = pyqtSignal(dict)        # double-click on a row → DXSpotter
-    # (psk_removed, wsjt_removed, telnet1_removed, telnet2_removed) on row expiry
-    spots_expired  = pyqtSignal(int, int, int, int)
+    # (psk_removed, wsjt_removed, telnet1_removed, telnet2_removed,
+    #  telnet3_removed, telnet4_removed) on row expiry
+    spots_expired  = pyqtSignal(int, int, int, int, int, int)
 
     _MODE_SORT: dict[str, int] = {"CW": 0, "SSB": 1, "FT4": 2, "FT8": 3, "FT2": 4}
 
@@ -290,7 +300,7 @@ class SpotTable(QWidget):
         self._pending_spots: list[dict] = []
         batch_timer = QTimer(self)
         batch_timer.timeout.connect(self._flush_pending)
-        batch_timer.start(250)
+        batch_timer.start(1000)
 
         self._adif_log: ADIFLog | None = None
         self._criterion: str = 'mixed'
@@ -362,10 +372,7 @@ class SpotTable(QWidget):
             mode = data.get('mode', '')
             if adif is not None:
                 if criterion == 'was':
-                    if dxcc == 291:
-                        status = adif.was_status(adif.call_state(call), band)
-                    else:
-                        status = 'n/a'
+                    status = adif.was_status(adif.resolve_was_state(call, dxcc), band)
                 elif adif.mode_matches_criterion(mode, criterion):
                     status = _effective_status(adif.award_status(dxcc, band, criterion),
                                                criterion, band, adif)
@@ -470,18 +477,15 @@ class SpotTable(QWidget):
         band = data.get('band', '')
         mode = data.get('mode', '')
         if self._display_filter == 'us_canada':
-            return dxcc not in _US_CANADA_ENTITY_NUMBERS
+            return dxcc not in _US_CANADA_AK_HI_DXCC
         if self._display_filter == 'dxcc_only':
-            return dxcc in _US_CANADA_ENTITY_NUMBERS
+            return dxcc == _MAINLAND_US_DXCC
         if self._display_filter == 'unconfirmed':
             adif = self._adif_log
             if adif is None:
                 return False
             if self._criterion == 'was':
-                if dxcc == 291:
-                    status = adif.was_status(adif.call_state(call_item.text()), band)
-                else:
-                    status = 'n/a'
+                status = adif.was_status(adif.resolve_was_state(call_item.text(), dxcc), band)
             elif adif.mode_matches_criterion(mode, self._criterion):
                 status = adif.award_status(dxcc, band, self._criterion)
             else:
@@ -501,9 +505,14 @@ class SpotTable(QWidget):
                      if now - s.get('unix_time', now) <= self._max_age_secs]
         if not spots:
             return
+        # Keep the most-recently-heard report per call, not just the last one
+        # in arrival order — reports for the same call can land in this batch
+        # out of chronological order.
         deduped: dict[str, dict] = {}
         for spot in spots:
-            deduped[spot['call']] = spot
+            existing = deduped.get(spot['call'])
+            if existing is None or spot.get('unix_time', 0) >= existing.get('unix_time', 0):
+                deduped[spot['call']] = spot
         self.table.setSortingEnabled(False)
         self.table.setUpdatesEnabled(False)
         for spot in deduped.values():
@@ -524,13 +533,11 @@ class SpotTable(QWidget):
         state = ''
         if criterion == 'was':
             conf_list, wkd_list = [], []
-            if adif is not None and dxcc == 291:
-                state = adif.call_state(call)
-                status = adif.was_status(state, band)
-            elif adif is None:
+            if adif is None:
                 status = 'new'
             else:
-                status = 'n/a'
+                state = adif.resolve_was_state(call, dxcc)
+                status = adif.was_status(state, band)
         elif adif is not None:
             if adif.mode_matches_criterion(mode, criterion):
                 status = _effective_status(adif.award_status(dxcc, band, criterion),
@@ -567,14 +574,7 @@ class SpotTable(QWidget):
         orig_country = spot['country']
         country_display = orig_country
         if criterion == 'was' and dxcc == 291:
-            has_suffix = '/' in call
-            if has_suffix:
-                was_state = '?'
-            else:
-                was_state = state  # from adif.call_state() above ('' if unknown)
-                if not was_state:
-                    info = fcc_db.lookup_callsign_info(call)
-                    was_state = info.get('state', '') if info else ''
+            was_state = state if state else ('?' if '/' in call else '')
             country_display = f"US {was_state}" if was_state else "US"
 
         values = [
@@ -699,13 +699,11 @@ class SpotTable(QWidget):
             state = ''
             if criterion == 'was':
                 conf_list, wkd_list = [], []
-                if adif is not None and dxcc == 291:
-                    state = adif.call_state(call)
-                    status = adif.was_status(state, band)
-                elif adif is None:
+                if adif is None:
                     status = 'new'
                 else:
-                    status = 'n/a'
+                    state = adif.resolve_was_state(call, dxcc)
+                    status = adif.was_status(state, band)
             elif adif is not None:
                 if adif.mode_matches_criterion(mode, criterion):
                     status = _effective_status(adif.award_status(dxcc, band, criterion),
@@ -739,14 +737,7 @@ class SpotTable(QWidget):
             if country_item is not None:
                 orig_country: str = country_item.data(Qt.ItemDataRole.UserRole) or country_item.text()
                 if criterion == 'was' and dxcc == 291:
-                    has_suffix = '/' in call
-                    if has_suffix:
-                        was_state = '?'
-                    else:
-                        was_state = state  # already computed for WAS+adif path; '' otherwise
-                        if not was_state:
-                            info = fcc_db.lookup_callsign_info(call)
-                            was_state = info.get('state', '') if info else ''
+                    was_state = state if state else ('?' if '/' in call else '')
                     country_item.setText(f"US {was_state}" if was_state else "US")
                 else:
                     country_item.setText(orig_country)
@@ -779,6 +770,7 @@ class SpotTable(QWidget):
                 item.setText(_format_age(int(age)))
 
         psk_removed = wsjt_removed = telnet1_removed = telnet2_removed = 0
+        telnet3_removed = telnet4_removed = 0
         for row, source in reversed(expired_rows):
             self.table.removeRow(row)
             if source == 'wsjt':
@@ -787,11 +779,17 @@ class SpotTable(QWidget):
                 telnet1_removed += 1
             elif source == 'telnet2':
                 telnet2_removed += 1
+            elif source == 'telnet3':
+                telnet3_removed += 1
+            elif source == 'telnet4':
+                telnet4_removed += 1
             else:
                 psk_removed += 1
-        if psk_removed or wsjt_removed or telnet1_removed or telnet2_removed:
+        if (psk_removed or wsjt_removed or telnet1_removed or telnet2_removed
+                or telnet3_removed or telnet4_removed):
             self.spots_expired.emit(
-                psk_removed, wsjt_removed, telnet1_removed, telnet2_removed
+                psk_removed, wsjt_removed, telnet1_removed, telnet2_removed,
+                telnet3_removed, telnet4_removed,
             )
 
     # -- context menu ---------------------------------------------------------
@@ -832,24 +830,10 @@ class SpotTable(QWidget):
         criterion = self._criterion
 
         if criterion == 'was':
-            # WAS only applies to US stations (dxcc 291).
-            if dxcc != 291:
-                return
-            # Determine state from log or FCC; skip popup for unknown portable calls.
-            was_state = self._adif_log.call_state(call)
-            if not was_state:
-                if '/' in call:
-                    return  # portable/mobile — state indeterminate
-                info = fcc_db.lookup_callsign_info(call)
-                was_state = info.get('state', '') if info else ''
+            was_state = self._adif_log.resolve_was_state(call, dxcc)
             if not was_state:
                 return
-            all_conf, all_wkd = self._adif_log.was_qso_details(was_state, band)
-            # Limit to this specific call — state is shown in the header, not used to
-            # broaden the contact list.
-            call_up = call.upper()
-            conf_list = [e for e in all_conf if e['call'].upper() == call_up]
-            wkd_list  = [e for e in all_wkd  if e['call'].upper() == call_up]
+            conf_list, wkd_list = self._adif_log.was_qso_details(was_state, band)
         else:
             was_state = ''
             conf_list, wkd_list = self._adif_log.criterion_qso_details(dxcc, band, criterion)

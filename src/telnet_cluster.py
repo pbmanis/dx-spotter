@@ -3,7 +3,7 @@
 Connects to a DX cluster node via TCP, logs in with the operator's callsign,
 and forwards parsed DX spot lines to a caller-supplied callback.
 
-Two spot line formats are recognized:
+Three spot line formats are recognized:
 
 Standard (AR-Cluster, DXSpider)::
 
@@ -21,9 +21,20 @@ e.g.::
 
     14292.0  EA3KT       01-Jul-2026 0221Z                            EA <N5VBP>
 
+Self-spot / activation announcement (seen on WWFF/POTA self-spots; missing
+the colon after the spotter call)::
+
+    DX de <spotter>     <freq_kHz>  <dx_call>    <comment>
+
+e.g.::
+
+    DX de JI1IZS/     3500.0  JI1IZS/2     WWFF JAFF-0262    1201Z
+
 When no SNR is present in the comment, ``rp`` is set to ``'0'``.
 Mode is extracted from the comment first; if not found, it is inferred from
-the frequency using IARU band plans.
+the frequency using IARU band plans.  Trailing control characters (e.g. the
+terminal-bell ``\\x07`` some nodes append to alert spots) are stripped from
+the comment.
 """
 from __future__ import annotations
 
@@ -45,6 +56,25 @@ _SPOT_RE = re.compile(
 _SPOT_RE_ALT = re.compile(
     r'^\s*([\d.]+)\s+([A-Z0-9/]+)\s+'
     r'\d{2}-[A-Za-z]{3}-\d{4}\s+\d{4}[Zz]\s*(.*?)\s*<([A-Z0-9/\-#]+)>\s*$',
+    re.IGNORECASE,
+)
+
+# WB5VZL format (RBN):
+# DX de OE3KLU-#: 28187.90  OE3XAC         CW     5 dB  14 WPM  BEACON  0032Z
+# Groups: (spotter_call, freq_kHz, dx_call) followed by mode, snr, speed, cq, time comment)
+_SPOT_RE_RBN = re.compile(
+    r'^DX\s+de\s+([A-Z0-9/\-#]+)\s*:\s+([\d.]+)\s+([A-Z0-9/]+)\s*(.*)',
+    re.IGNORECASE,
+)
+
+# Self-spot / activation announcement format: same layout as the standard
+# format but missing the colon after the spotter call.
+# DX de JI1IZS/     3500.0  JI1IZS/2     WWFF JAFF-0262    1201Z
+# Groups: (spotter_call, freq_kHz, dx_call, comment)
+# Tried only after the colon-requiring formats above, since a colon right
+# after the spotter call already prevents this pattern from matching.
+_SPOT_RE_NO_COLON = re.compile(
+    r'^DX\s+de\s+([A-Z0-9/\-#]+)\s+([\d.]+)\s+([A-Z0-9/]+)\s*(.*)',
     re.IGNORECASE,
 )
 
@@ -281,27 +311,82 @@ class TelnetCluster(threading.Thread):
                         line_bytes, buf = buf.split(b'\n', 1)
                         line = line_bytes.decode('ascii', errors='replace').rstrip('\r')
                         if line:
-                            self._process_line(line)
+                            self._process_line(line, host_index=self._index)
             finally:
                 self._connected = False
                 self._sock = None
+    
 
-    def _process_line(self, line: str) -> None:
-        # Parse one text line; invoke on_spot if it matches either spot format.
-        m = _SPOT_RE.match(line)
-        if m:
-            spotter  = m.group(1).upper()
-            freq_str = m.group(2)
-            dx_call  = m.group(3).upper().replace('.', '/')
-            comment  = (m.group(4) or '').strip()
-        else:
+    
+    def _process_line(self, line: str, host_index: str) -> None:
+        """ Parse one text line; invoke on_spot if it matches either spot format.
+         wb5vzl format: 
+         DX de OE3KLU-#: 28187.90  OE3XAC         CW     5 dB  14 WPM  BEACON  0032Z
+        
+         Parameters:
+        ----------
+        line : str
+            One line of text received from the cluster.
+        host : str
+            Hostname or IP address of the cluster (for logging).
+        
+        """
+        def _spot_basic(line:str) -> tuple[bool, str, str, str, str] | None:
+            m = _SPOT_RE.match(line)
+            if m:
+                spotter  = m.group(1).upper()
+                freq_str = m.group(2)
+                dx_call  = m.group(3).upper().replace('.', '/')
+                comment  = (m.group(4) or '').strip()
+                return True, spotter, freq_str, dx_call, comment
+            else:
+                return False, '', '', '', ''
+        
+        def _spot_alt(line:str) -> tuple[bool, str, str, str, str] | None:
             m = _SPOT_RE_ALT.match(line)
-            if m is None:
-                return
-            freq_str = m.group(1)
-            dx_call  = m.group(2).upper().replace('.', '/')
-            comment  = (m.group(3) or '').strip()
-            spotter  = m.group(4).upper()
+            if m:
+                freq_str = m.group(1)
+                dx_call  = m.group(2).upper().replace('.', '/')
+                comment  = (m.group(3) or '').strip()
+                spotter  = m.group(4).upper()
+                return True, spotter, freq_str, dx_call, comment
+            else:
+                return False, '', '', '', ''
+        
+        def _spot_rbn(line:str) -> tuple[bool, str, str, str, str] | None:
+            m = _SPOT_RE_RBN.match(line)
+            if m:
+                spotter  = m.group(1).upper()
+                freq_str = m.group(2)
+                dx_call  = m.group(3).upper().replace('.', '/')
+                comment  = (m.group(4) or '').strip()
+                return True, spotter, freq_str, dx_call, comment
+            else:
+                return False, '', '', '', ''
+
+        def _spot_no_colon(line:str) -> tuple[bool, str, str, str, str] | None:
+            m = _SPOT_RE_NO_COLON.match(line)
+            if m:
+                spotter  = m.group(1).upper()
+                freq_str = m.group(2)
+                dx_call  = m.group(3).upper().replace('.', '/')
+                comment  = (m.group(4) or '').strip()
+                return True, spotter, freq_str, dx_call, comment
+            else:
+                return False, '', '', '', ''
+
+        parsed, spotter, freq_str, dx_call, comment = False, '', '', '', ''
+        for spot_read in [_spot_basic, _spot_alt, _spot_rbn, _spot_no_colon]:
+            parsed, spotter, freq_str, dx_call, comment = spot_read(line)
+            if parsed:
+                break
+        if not parsed:
+            print(f"Telnet cluster {host_index}: unrecognized line: {line!r}")
+            return
+
+        # Strip trailing control characters some nodes append (e.g. terminal-bell
+        # '\x07' on alert spots) so they don't leak into the displayed comment.
+        comment = re.sub(r'[\x00-\x1f\x7f]+', '', comment).strip()
 
         try:
             freq_khz = float(freq_str)
@@ -320,7 +405,11 @@ class TelnetCluster(threading.Thread):
                 break
         if not mode:
             mode = _infer_mode_from_freq(freq_khz)
-
+        # if host_index == 2:
+        #     print(
+        #         f"Telnet cluster {host_index}: "
+        #         f"{freq_khz:8.1f} kHz {dx_call:12s} {spotter:12s} {mode:3s} {rp} dB {comment}"
+        #     )
         self._on_spot({
             'call':        dx_call,
             'rc':          spotter,
@@ -330,4 +419,5 @@ class TelnetCluster(threading.Thread):
             'md':          mode,
             'unix_time':   time.time(),
             'comment':     comment,
+            'host_index':  host_index,
         })

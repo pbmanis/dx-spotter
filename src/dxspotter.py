@@ -85,6 +85,10 @@ class DXSpotter:
         Number of DX Cluster 1 spots currently in the table.
     telnet2_counter : int
         Number of DX Cluster 2 spots currently in the table.
+    telnet3_counter : int
+        Number of DX Cluster 3 spots currently in the table.
+    telnet4_counter : int
+        Number of DX Cluster 4 spots currently in the table.
     topic : str or None
         Active PSK Reporter MQTT subscription topic string.
     my_grid : str
@@ -117,6 +121,8 @@ class DXSpotter:
         self.wsjt_counter: int = 0
         self.telnet1_counter: int = 0
         self.telnet2_counter: int = 0
+        self.telnet3_counter: int = 0
+        self.telnet4_counter: int = 0
         self.topic: str | None = None
         self.my_grid: str = "FM05kw"
         self.window: MainWindow | None = None
@@ -124,7 +130,10 @@ class DXSpotter:
         self.wsjt_listener: WsjtxListener | None = None
         self._telnet1: TelnetCluster | None = None
         self._telnet2: TelnetCluster | None = None
+        self._telnet3: TelnetCluster | None = None
+        self._telnet4: TelnetCluster | None = None
         self._mqtt_listener: MqttListener | None = None
+        self._psk_call_times: dict[str, float] = {}  # call -> last-shown epoch (reshow gate)
         self._current_adif_path: str = ''
         self._criterion: str = 'mixed'
         self._config: AppConfig = AppConfig()
@@ -299,6 +308,9 @@ class DXSpotter:
             self.wsjt_counter = 0
             self.telnet1_counter = 0
             self.telnet2_counter = 0
+            self.telnet3_counter = 0
+            self.telnet4_counter = 0
+            self._psk_call_times.clear()
             if self.window is not None:
                 self.window.clear_table()
 
@@ -357,6 +369,9 @@ class DXSpotter:
         self.wsjt_counter = 0
         self.telnet1_counter = 0
         self.telnet2_counter = 0
+        self.telnet3_counter = 0
+        self.telnet4_counter = 0
+        self._psk_call_times.clear()
         if self.window is not None:
             self.window.clear_table()
         if self._mqtt_listener is not None and self.topic:
@@ -415,6 +430,8 @@ class DXSpotter:
                     if payload['md'] not in ["CW", "FT4", "FT8", "FT2", "SSB"]: return
                 case "CS":
                     if payload['md'] not in ["CW", "SSB"]: return
+                case 'RTTY':
+                    if payload['md'] != 'RTTY': return
                 case _:
                     return
 
@@ -422,6 +439,8 @@ class DXSpotter:
             colorline = Fore.GREEN
         elif payload['md'] in ['FT4', 'FT8', 'FT2']:
             colorline = Fore.CYAN
+        elif payload['md'] == 'RTTY':
+            colorline = Fore.BLUE
         elif payload['md'] == 'SSB':
             colorline = Fore.MAGENTA
         else:
@@ -455,6 +474,11 @@ class DXSpotter:
         rx_grids = self._config.rx_grid_prefixes
         if rx_grids and not any(payload['rl'].startswith(g) for g in rx_grids):
             return
+
+        now = time.time()
+        if now - self._psk_call_times.get(call, 0.0) < self._config.pskr_reshow_secs:
+            return   # suppress table update; call was shown too recently
+        self._psk_call_times[call] = now
 
         dxcc = self.get_dxcc(call)
 
@@ -561,10 +585,11 @@ class DXSpotter:
         'FC':  frozenset({'CW', 'FT4', 'FT8', 'FT2'}),
         'FCS': frozenset({'CW', 'FT4', 'FT8', 'FT2', 'SSB'}),
         'CS':  frozenset({'CW', 'SSB'}),
+        'RTTY': frozenset({'RTTY'}),
     }
 
     def _on_telnet_spot(self, raw: dict, index: int) -> None:
-        # Enrich a raw TelnetCluster spot dict and forward it to the spot table.
+        # Massage a raw TelnetCluster spot dict and forward it to the spot table.
         # Called from a TelnetCluster background thread — only uses Qt signals
         # (thread-safe) for all GUI interactions.
         assert self.args is not None
@@ -576,21 +601,29 @@ class DXSpotter:
         if self.args.mode is not None:
             allowed = self._MODE_FILTER.get(self.args.mode.upper())
             if allowed is not None and mode not in allowed:
+                if self.args.terminal:
+                    print(f"telnet spot dropped: mode {mode!r} not in {self.args.mode!r} filter")
                 return
 
         band = freq_to_band(freq_hz)
         if not band:
+            if self.args.terminal:
+                print(f"telnet spot dropped: out of band ({freq_hz} Hz)")
             return  # frequency outside recognized ham bands
 
-        # Do not show telnet-derived spots from outside the US or Canada
-        # so that "irrelevant" spots from outside North America are filtered out.
-        # technically, this should be a setting...
+        # Optionally hide telnet-derived spots from outside the US or Canada
+        # (Settings → DX Cluster → "Only show spots from US/Canada spotters").
         spotter = raw['rc']
-        if self.get_dxcc(spotter) not in (291, 1):
+        spotter = spotter[:-2] if spotter.endswith('-#') else spotter
+        if self._config.telnet_us_ca_spotters_only and self.get_dxcc(spotter) not in (291, 1):
+            if self.args.terminal:
+                print(f"telnet spot dropped: spotter {spotter} outside US/Canada")
             return
 
         # Apply band filter when a specific band is selected
         if self.args.band is not None and band != self.args.band:
+            if self.args.terminal:
+                print(f"telnet spot dropped: out of selected band ({band})")
             return
 
         # Look up spotter lat/lon from FCC DB and compute distance from operator.
@@ -602,6 +635,8 @@ class DXSpotter:
         else:
             range_km = 0
         if self.args.range is not None and range_km > self.args.range > 0:
+            if self.args.terminal:
+                print(f"telnet spot dropped: spotter {spotter} out of range ({range_km} km)")
             return
 
         dxcc = self.get_dxcc(call)
@@ -612,10 +647,15 @@ class DXSpotter:
 
         if index == 1:
             self.telnet1_counter += 1
-        else:
+        elif index == 2:
             self.telnet2_counter += 1
+        elif index == 3:
+            self.telnet3_counter += 1
+        else:
+            self.telnet4_counter += 1
         total = (self.psk_counter + self.wsjt_counter
-                 + self.telnet1_counter + self.telnet2_counter)
+                 + self.telnet1_counter + self.telnet2_counter
+                 + self.telnet3_counter + self.telnet4_counter)
 
         if self.args.terminal:
             print(
@@ -787,14 +827,21 @@ class DXSpotter:
         wsjt_removed: int,
         telnet1_removed: int,
         telnet2_removed: int,
+        telnet3_removed: int,
+        telnet4_removed: int,
     ) -> None:
         self.psk_counter = max(0, self.psk_counter - psk_removed)
         self.wsjt_counter = max(0, self.wsjt_counter - wsjt_removed)
         self.telnet1_counter = max(0, self.telnet1_counter - telnet1_removed)
         self.telnet2_counter = max(0, self.telnet2_counter - telnet2_removed)
+        self.telnet3_counter = max(0, self.telnet3_counter - telnet3_removed)
+        self.telnet4_counter = max(0, self.telnet4_counter - telnet4_removed)
 
     def _update_pskr_status(self) -> None:
         if self.window is None:
+            return
+        if not self._config.pskr_enabled:
+            self.window.set_pskr_status("PSKR: disabled", ok=None)
             return
         connected = self._mqtt_listener.connected if self._mqtt_listener is not None else False
         if connected:
@@ -803,10 +850,13 @@ class DXSpotter:
             self.window.set_pskr_status(f"PSKR: {DISCONNECTED}", ok=None)
 
     def _update_telnet_status(self) -> None:
-        # Poll each cluster's connected property and update the T1/T2 status bar labels.
+        # Poll each cluster's connected property and update the T1-T4 status bar labels.
         if self.window is None:
             return
-        for index, cluster in ((1, self._telnet1), (2, self._telnet2)):
+        for index, cluster in (
+            (1, self._telnet1), (2, self._telnet2),
+            (3, self._telnet3), (4, self._telnet4),
+        ):
             if cluster is None:
                 self.window.set_telnet_status(index, f"T{index}: {DISCONNECTED}", ok=None)
             elif cluster.connected:
@@ -993,7 +1043,7 @@ class DXSpotter:
                             choices=["2m", "6m", "10m", "15m", "17m", "20m", "30m", "40m", "80m", "160m"],
                             help="Band (e.g. 20m)")
         parser.add_argument("-m", "--mode", required=False,
-                            choices=["FT8", "FT4", "FT2", "CW", "SSB", "FC", "FCS", "CS"],
+                            choices=["FT8", "FT4", "FT2", "CW", "SSB", "FC", "FCS", "CS", "FT", "RTTY"],
                             help="Mode (e.g. FT8)")
         parser.add_argument("-r", "--range", required=False, type=int,
                             help="Maximum rx station range from my grid in km (0 = no limit)")
@@ -1073,6 +1123,8 @@ class DXSpotter:
         self.window.restyle_spots(self.adif_log, self._criterion)
         self.window.set_max_spot_age(cfg.max_spot_age)
         self.window.set_log_info(self._log_info_text(cfg, self.adif_log))
+        self.window.set_station_info(self.args.call or '', self.my_grid)
+        self.window.update_paper_only_list(self._build_paper_only_list(self.adif_log))
         self.window.show()
 
         if _first_run:
@@ -1085,6 +1137,7 @@ class DXSpotter:
             self.window.update_counts(
                 self.psk_counter, self.wsjt_counter,
                 self.telnet1_counter, self.telnet2_counter,
+                self.telnet3_counter, self.telnet4_counter,
             )
             self._update_wsjt_status()
             self._update_pskr_status()
@@ -1105,13 +1158,14 @@ class DXSpotter:
         )
         self._commander_poll_thread.start()
 
-        self._mqtt_listener = MqttListener(
-            host='mqtt.pskreporter.info',
-            port=1883,
-            topic=self.topic,
-            on_spot=self._on_psk_spot,
-        )
-        self._mqtt_listener.start()
+        if cfg.pskr_enabled:
+            self._mqtt_listener = MqttListener(
+                host=cfg.pskr_host,
+                port=cfg.pskr_port,
+                topic=self.topic,
+                on_spot=self._on_psk_spot,
+            )
+            self._mqtt_listener.start()
 
         if self.args.wsjt:
             self.wsjt_listener = WsjtxListener(
@@ -1145,6 +1199,20 @@ class DXSpotter:
                 index=2,
             )
             self._telnet2.start()
+        if cfg.telnet3_enabled and cfg.telnet3_host and cfg.telnet3_callsign:
+            self._telnet3 = TelnetCluster(
+                cfg.telnet3_host, cfg.telnet3_port, cfg.telnet3_callsign,
+                on_spot=lambda raw: self._on_telnet_spot(raw, 3),
+                index=3,
+            )
+            self._telnet3.start()
+        if cfg.telnet4_enabled and cfg.telnet4_host and cfg.telnet4_callsign:
+            self._telnet4 = TelnetCluster(
+                cfg.telnet4_host, cfg.telnet4_port, cfg.telnet4_callsign,
+                on_spot=lambda raw: self._on_telnet_spot(raw, 4),
+                index=4,
+            )
+            self._telnet4.start()
 
         def _save_and_cleanup():
             self._save_config()
@@ -1157,6 +1225,10 @@ class DXSpotter:
                 self._telnet1.stop()
             if self._telnet2 is not None:
                 self._telnet2.stop()
+            if self._telnet3 is not None:
+                self._telnet3.stop()
+            if self._telnet4 is not None:
+                self._telnet4.stop()
 
         app.aboutToQuit.connect(_save_and_cleanup)
         sys.exit(app.exec())
@@ -1171,6 +1243,18 @@ class DXSpotter:
             print("Loading ADIF log")
             return ADIFLog(cfg.adif_path)
         return None
+
+    def _build_paper_only_list(self, log: 'ADIFLog | None') -> list[dict]:
+        # Return country-enriched, country-sorted confirmed QSOs for paper-only DXCC entities.
+        if log is None:
+            return []
+        entries = log.paper_only_confirmed_entries()
+        result = []
+        for entry in entries:
+            country = self.get_country_text(entry['call'])
+            result.append({**entry, 'country': country})
+        result.sort(key=lambda x: (x['country'].lower(), x['call'].upper()))
+        return result
 
     @staticmethod
     def _log_info_text(cfg, log: 'ADIFLog | None') -> str:
@@ -1212,6 +1296,7 @@ class DXSpotter:
         self.adif_log = self._load_log(cfg)
         self.window.restyle_spots(self.adif_log, self._criterion)
         self.window.set_log_info(self._log_info_text(cfg, self.adif_log))
+        self.window.update_paper_only_list(self._build_paper_only_list(self.adif_log))
         src = 'RumLogNG' if cfg.log_source == 'rumlogng' else cfg.adif_path
         print(f"Log reloaded: {src}")
 
@@ -1250,6 +1335,7 @@ class DXSpotter:
         """Open the Settings dialog; apply changes immediately where possible."""
         if self.window is None:
             return
+        assert self.args is not None
         cfg = self._config
         dlg = SettingsDialog(
             log_source=cfg.log_source,
@@ -1272,6 +1358,20 @@ class DXSpotter:
             telnet2_host=cfg.telnet2_host,
             telnet2_port=cfg.telnet2_port,
             telnet2_callsign=cfg.telnet2_callsign,
+            telnet3_enabled=cfg.telnet3_enabled,
+            telnet3_host=cfg.telnet3_host,
+            telnet3_port=cfg.telnet3_port,
+            telnet3_callsign=cfg.telnet3_callsign,
+            telnet4_enabled=cfg.telnet4_enabled,
+            telnet4_host=cfg.telnet4_host,
+            telnet4_port=cfg.telnet4_port,
+            telnet4_callsign=cfg.telnet4_callsign,
+            telnet_us_ca_spotters_only=cfg.telnet_us_ca_spotters_only,
+            pskr_enabled=cfg.pskr_enabled,
+            pskr_host=cfg.pskr_host,
+            pskr_port=cfg.pskr_port,
+            pskr_service_name=cfg.pskr_service_name,
+            pskr_reshow_secs=cfg.pskr_reshow_secs,
             cty_path=str(cty_cache.cty_plist_path()),
             parent=self.window,
         )
@@ -1286,6 +1386,7 @@ class DXSpotter:
         cfg.udp_port = dlg.udp_port
         self.my_grid = dlg.my_grid
         cfg.my_grid = dlg.my_grid
+        self.window.set_station_info(self.args.call or '', self.my_grid)
         cfg.rx_grid_prefixes = dlg.rx_grid_prefixes
         cfg.wsjt_reshow_secs = dlg.wsjt_reshow_secs
         cfg.wsjt_no_spot_mins = dlg.wsjt_no_spot_mins
@@ -1339,6 +1440,78 @@ class DXSpotter:
                 )
                 self._telnet2.start()
 
+        t3_changed = (
+            cfg.telnet3_enabled != dlg.telnet3_enabled
+            or cfg.telnet3_host != dlg.telnet3_host
+            or cfg.telnet3_port != dlg.telnet3_port
+            or cfg.telnet3_callsign != dlg.telnet3_callsign
+        )
+        cfg.telnet3_enabled = dlg.telnet3_enabled
+        cfg.telnet3_host = dlg.telnet3_host
+        cfg.telnet3_port = dlg.telnet3_port
+        cfg.telnet3_callsign = dlg.telnet3_callsign
+        if t3_changed:
+            if self._telnet3 is not None:
+                self._telnet3.stop()
+            self._telnet3 = None
+            if cfg.telnet3_enabled and cfg.telnet3_host and cfg.telnet3_callsign:
+                self._telnet3 = TelnetCluster(
+                    cfg.telnet3_host, cfg.telnet3_port, cfg.telnet3_callsign,
+                    on_spot=lambda raw: self._on_telnet_spot(raw, 3),
+                    index=3,
+                )
+                self._telnet3.start()
+
+        t4_changed = (
+            cfg.telnet4_enabled != dlg.telnet4_enabled
+            or cfg.telnet4_host != dlg.telnet4_host
+            or cfg.telnet4_port != dlg.telnet4_port
+            or cfg.telnet4_callsign != dlg.telnet4_callsign
+        )
+        cfg.telnet4_enabled = dlg.telnet4_enabled
+        cfg.telnet4_host = dlg.telnet4_host
+        cfg.telnet4_port = dlg.telnet4_port
+        cfg.telnet4_callsign = dlg.telnet4_callsign
+        if t4_changed:
+            if self._telnet4 is not None:
+                self._telnet4.stop()
+            self._telnet4 = None
+            if cfg.telnet4_enabled and cfg.telnet4_host and cfg.telnet4_callsign:
+                self._telnet4 = TelnetCluster(
+                    cfg.telnet4_host, cfg.telnet4_port, cfg.telnet4_callsign,
+                    on_spot=lambda raw: self._on_telnet_spot(raw, 4),
+                    index=4,
+                )
+                self._telnet4.start()
+
+        # No reconnect needed — this only affects per-spot filtering in _on_telnet_spot.
+        cfg.telnet_us_ca_spotters_only = dlg.telnet_us_ca_spotters_only
+
+        # Restart the PSK Reporter MQTT connection if any of its settings changed
+        pskr_changed = (
+            cfg.pskr_enabled != dlg.pskr_enabled
+            or cfg.pskr_host != dlg.pskr_host
+            or cfg.pskr_port != dlg.pskr_port
+        )
+        cfg.pskr_enabled = dlg.pskr_enabled
+        cfg.pskr_host = dlg.pskr_host
+        cfg.pskr_port = dlg.pskr_port
+        cfg.pskr_service_name = dlg.pskr_service_name
+        cfg.pskr_reshow_secs = dlg.pskr_reshow_secs
+        if pskr_changed:
+            if self._mqtt_listener is not None:
+                self._mqtt_listener.stop()
+            self._mqtt_listener = None
+            if cfg.pskr_enabled:
+                assert self.topic is not None
+                self._mqtt_listener = MqttListener(
+                    host=cfg.pskr_host,
+                    port=cfg.pskr_port,
+                    topic=self.topic,
+                    on_spot=self._on_psk_spot,
+                )
+                self._mqtt_listener.start()
+
         new_source = dlg.log_source
         new_adif = dlg.adif_path
         source_changed = new_source != cfg.log_source
@@ -1351,6 +1524,7 @@ class DXSpotter:
             self.adif_log = self._load_log(cfg)
             self.window.restyle_spots(self.adif_log, self._criterion)
             self.window.set_log_info(self._log_info_text(cfg, self.adif_log))
+            self.window.update_paper_only_list(self._build_paper_only_list(self.adif_log))
             src_label = 'RumLogNG' if new_source == 'rumlogng' else f'ADIF: {new_adif}'
             print(f"Log source changed → {src_label}")
 

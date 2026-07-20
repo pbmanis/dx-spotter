@@ -12,12 +12,15 @@ All inter-component communication uses Qt signals so that MQTT / WSJT-X
 background threads can safely call into the UI via the signal/slot mechanism.
 """
 import argparse
+from datetime import datetime, timezone
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApplication,
     QGroupBox, QFormLayout, QLabel, QRadioButton, QButtonGroup,
+    QTableWidget, QTableWidgetItem, QHeaderView, QToolBar, QSizePolicy,
 )
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, Qt, QTimer
+from PyQt6.QtGui import QFontDatabase
 
 from version import __version__
 
@@ -30,7 +33,7 @@ from spot_window import SpotTable, make_app_icon  # re-export make_app_icon
 
 _BANDS = ['All', '160m', '80m', '60m', '40m', '30m', '20m',
           '17m', '15m', '12m', '10m', '6m', '2m']
-_MODES = ['FT8', 'FT4', 'FT2', 'CW', 'SSB', 'FC', 'FCS', 'CS']
+_MODES = ['FT8', 'FT4', 'FT2', 'CW', 'SSB', 'FC', 'FCS', 'FT', 'RTTY', 'CS']
 _WSJT_FILTERS = ['CQ', 'all']
 
 # Award criteria: internal key → display label (controls QSL column coloring only)
@@ -49,8 +52,8 @@ _DEFAULT_CRITERION = 'mixed'
 # Display filter: controls which rows are visible in the spot table
 _DISPLAY_FILTERS: list[tuple[str, str]] = [
     ('all',         'All'),
-    ("us_canada", 'US & Canada only'),
-    ('dxcc_only',   'DXCC only  (no US, Canada)'),
+    ("us_canada", 'US, AK, HI, VE)'),
+    ('dxcc_only',   'DXCC only  (no mainland US)'),
     ('unconfirmed', 'Unconfirmed or New'),
 ]
 _DEFAULT_DISPLAY_FILTER = 'all'
@@ -132,33 +135,74 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"DX Spotter V{__version__}")
         self.resize(1400, 700)
 
+        # ── Top toolbar: log info (left), station call/grid + GMT clock (right) ──
+        clock_bar = QToolBar()
+        clock_bar.setMovable(False)
+
+        self._sb_log = QLabel("No log loaded")
+        self._sb_log.setStyleSheet("padding: 0 6px;")
+        clock_bar.addWidget(self._sb_log)
+
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        clock_bar.addWidget(spacer)
+
+        self._station_label = QLabel()
+        self._station_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._station_label.setStyleSheet("padding: 0 10px;")
+        clock_bar.addWidget(self._station_label)
+
+        self._clock_label = QLabel()
+        self._clock_label.setStyleSheet("padding: 0 10px;")
+        # Fixed-pitch font so the digit glyphs are all the same width and the
+        # label doesn't shift horizontally as the seconds tick over.
+        clock_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        clock_font.setPointSize(13)
+        clock_font.setBold(True)
+        self._clock_label.setFont(clock_font)
+        clock_bar.addWidget(self._clock_label)
+
+        self.addToolBar(clock_bar)
+
+        self._clock_timer = QTimer(self)
+        self._clock_timer.timeout.connect(self._update_clock)
+        self._clock_timer.start(1000)
+        self._update_clock()
+
         area = DockArea()
         self.setCentralWidget(area)
 
         # ── Status bar ────────────────────────────────────────────────────────
-        self._sb_log  = QLabel("No log loaded")
         # Status labels are all disconnected until setup is complete and connections are established.
         self._sb_t1   = QLabel(f"T1: {DISCONNECTED}")
         self._sb_t2   = QLabel(f"T2: {DISCONNECTED}")
+        self._sb_t3   = QLabel(f"T3: {DISCONNECTED}")
+        self._sb_t4   = QLabel(f"T4: {DISCONNECTED}")
         self._sb_pskr = QLabel(f"PSKR: {DISCONNECTED}")
         self._sb_wsjt = QLabel(f"WSJT-X: {DISCONNECTED}")
-        self._sb_log.setStyleSheet("padding: 0 6px;")
         self._sb_t1.setStyleSheet("padding: 0 6px; color: #888888;")
         self._sb_t2.setStyleSheet("padding: 0 6px; color: #888888;")
+        self._sb_t3.setStyleSheet("padding: 0 6px; color: #888888;")
+        self._sb_t4.setStyleSheet("padding: 0 6px; color: #888888;")
         self._sb_pskr.setStyleSheet("padding: 0 6px; color: #888888;")
         self._sb_wsjt.setStyleSheet("padding: 0 6px;")
-        self.statusBar().addWidget(self._sb_log, 1)         # left, stretches
+        self._sb_telnet = {1: self._sb_t1, 2: self._sb_t2, 3: self._sb_t3, 4: self._sb_t4}
         self.statusBar().addPermanentWidget(self._sb_t1)    # right: T1
         self.statusBar().addPermanentWidget(self._sb_t2)    # right: T2
+        self.statusBar().addPermanentWidget(self._sb_t3)    # right: T3
+        self.statusBar().addPermanentWidget(self._sb_t4)    # right: T4
         self.statusBar().addPermanentWidget(self._sb_pskr)  # right: PSKR
         self.statusBar().addPermanentWidget(self._sb_wsjt)  # right: WSJT-X
 
-        left_dock    = Dock("Settings", size=(300, 700))
-        right_dock   = Dock("Spots",    size=(1100, 525))
-        bandmap_dock = Dock("Band Map", size=(1100, 175))
+        left_dock    = Dock("Settings",      size=(300, 700))
+        right_dock   = Dock("Spots",         size=(1100, 525))
+        paper_dock   = Dock("Paper QSL Only", size=(1100, 525))
+        bandmap_dock = Dock("Band Map",      size=(1100, 175))
         area.addDock(left_dock,    'left')
         area.addDock(right_dock,   'right',  relativeTo=left_dock)
+        area.addDock(paper_dock,   'below',  relativeTo=right_dock)
         area.addDock(bandmap_dock, 'bottom', relativeTo=right_dock)
+        right_dock.raiseDock()  # make the Spots dock the default visible one
 
         # ── build pyqtgraph Parameter tree
         self._params = self._build_params(initial_args)
@@ -211,15 +255,13 @@ class MainWindow(QMainWindow):
         rpt_layout = QFormLayout(reports_box)
         rpt_layout.setContentsMargins(4, 4, 4, 4)
         rpt_layout.setSpacing(2)
-        self._lbl_psk     = QLabel("0")
-        self._lbl_wsjt    = QLabel("0")
-        self._lbl_telnet1 = QLabel("0")
-        self._lbl_telnet2 = QLabel("0")
-        self._lbl_total   = QLabel("0")
-        rpt_layout.addRow("PSK Reporter:", self._lbl_psk)
+        self._lbl_psk    = QLabel("0")
+        self._lbl_wsjt   = QLabel("0")
+        self._lbl_telnet = QLabel("T1   0 T2   0 T3   0 T4   0")
+        self._lbl_total  = QLabel("0")
+        rpt_layout.addRow("PSK:", self._lbl_psk)
         rpt_layout.addRow("WSJT-X:",       self._lbl_wsjt)
-        rpt_layout.addRow("Telnet 1:",     self._lbl_telnet1)
-        rpt_layout.addRow("Telnet 2:",     self._lbl_telnet2)
+        rpt_layout.addRow("Telnet:",       self._lbl_telnet)
         rpt_layout.addRow("Total:",        self._lbl_total)
 
         # ── Restart / Reload Log / Settings / Quit / Laptop Mode buttons ─────
@@ -281,6 +323,26 @@ class MainWindow(QMainWindow):
         if initial_display_filter != 'all':
             self._band_map.set_display_filter(initial_display_filter)
 
+        # ── Paper QSL-only list ───────────────────────────────────────────────
+        _PAPER_COLS = ["Country", "Call", "Date", "Time", "Band"]
+        _PAPER_COL_WIDTHS = [220, 100, 90, 65, 55]
+        self._paper_table = QTableWidget(0, len(_PAPER_COLS))
+        self._paper_table.setHorizontalHeaderLabels(_PAPER_COLS)
+        self._paper_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._paper_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._paper_table.setAlternatingRowColors(True)
+        self._paper_table.setSortingEnabled(True)
+        _vh = self._paper_table.verticalHeader()
+        if _vh is not None:
+            _vh.setVisible(False)
+        _hdr = self._paper_table.horizontalHeader()
+        if _hdr is not None:
+            for _col, _w in enumerate(_PAPER_COL_WIDTHS):
+                _hdr.setSectionResizeMode(_col, QHeaderView.ResizeMode.Interactive)
+                self._paper_table.setColumnWidth(_col, _w)
+            _hdr.setStretchLastSection(False)
+        paper_dock.addWidget(self._paper_table)
+
     # -- parameter tree -------------------------------------------------------
 
     @staticmethod
@@ -333,6 +395,10 @@ class MainWindow(QMainWindow):
                 self.settings_changed.emit(self._collect_settings())
                 return
 
+    def _update_clock(self) -> None:
+        # refresh the GMT clock in the top toolbar, called every second
+        self._clock_label.setText(datetime.now(timezone.utc).strftime("%H:%M:%S") + "Z")
+
     def _update_was_label(self) -> None:
         if self._was_rb is None:
             return
@@ -359,6 +425,8 @@ class MainWindow(QMainWindow):
         wsjt_count: int,
         telnet1_count: int = 0,
         telnet2_count: int = 0,
+        telnet3_count: int = 0,
+        telnet4_count: int = 0,
     ) -> None:
         """Refresh the Reports panel spot counters.
 
@@ -372,12 +440,19 @@ class MainWindow(QMainWindow):
             Number of DX Cluster 1 spots currently in the table.
         telnet2_count : int, optional
             Number of DX Cluster 2 spots currently in the table.
+        telnet3_count : int, optional
+            Number of DX Cluster 3 spots currently in the table.
+        telnet4_count : int, optional
+            Number of DX Cluster 4 spots currently in the table.
         """
         self._lbl_psk.setText(str(psk_count))
         self._lbl_wsjt.setText(str(wsjt_count))
-        self._lbl_telnet1.setText(str(telnet1_count))
-        self._lbl_telnet2.setText(str(telnet2_count))
-        total = psk_count + wsjt_count + telnet1_count + telnet2_count
+        self._lbl_telnet.setText(
+            f"T1: {telnet1_count:>3}  T2: {telnet2_count:>3}  "
+            f"T3: {telnet3_count:>3}  T4: {telnet4_count:>3}"
+        )
+        total = (psk_count + wsjt_count + telnet1_count + telnet2_count
+                 + telnet3_count + telnet4_count)
         self._lbl_total.setText(str(total))
 
     def clear_table(self) -> None:
@@ -457,6 +532,43 @@ class MainWindow(QMainWindow):
                 return btn.property('display_filter')
         return _DEFAULT_DISPLAY_FILTER
 
+    def update_paper_only_list(self, entries: list[dict]) -> None:
+        """Populate the Paper QSL-only dock table.
+
+        Parameters
+        ----------
+        entries : list[dict]
+            Each dict must have keys ``country``, ``call``, ``date``, ``time``,
+            and ``band``.  Expected to be pre-sorted alphabetically by country.
+            ``date`` is ``YYYYMMDD`` and ``time`` is ``HHMMSS``; both are
+            reformatted for display.
+        """
+        self._paper_table.setSortingEnabled(False)
+        self._paper_table.setRowCount(0)
+        for row, entry in enumerate(entries):
+            self._paper_table.insertRow(row)
+            date_raw = entry.get('date', '')
+            date_display = (
+                f"{date_raw[:4]}-{date_raw[4:6]}-{date_raw[6:8]}"
+                if len(date_raw) == 8 else date_raw
+            )
+            time_raw = entry.get('time', '')
+            time_display = (
+                f"{time_raw[:2]}:{time_raw[2:4]}Z"
+                if len(time_raw) >= 4 else time_raw
+            )
+            for col, text in enumerate([
+                entry.get('country', ''),
+                entry.get('call', ''),
+                date_display,
+                time_display,
+                entry.get('band', '').lower(),
+            ]):
+                item = QTableWidgetItem(text)
+                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                self._paper_table.setItem(row, col, item)
+        self._paper_table.setSortingEnabled(True)
+
     def set_max_spot_age(self, minutes: int) -> None:
         """Forward the max-spot-age setting to the spot table and bandmap.
 
@@ -469,15 +581,28 @@ class MainWindow(QMainWindow):
         self._band_map.set_max_age(minutes)
 
     def set_log_info(self, text: str) -> None:
-        """Set the log-info text in the left side of the status bar.
+        """Set the log-info text in the left side of the top toolbar.
 
         Parameters
         ----------
         text : str
-            Summary string displayed in the status bar (e.g. QSO count,
+            Summary string displayed in the top toolbar (e.g. QSO count,
             confirmed DXCC count).
         """
         self._sb_log.setText(text)
+
+    def set_station_info(self, call: str, grid: str) -> None:
+        """Set the operator callsign/grid square shown centered in the top toolbar.
+
+        Parameters
+        ----------
+        call : str
+            Operator callsign, or ``''`` if not yet known.
+        grid : str
+            Maidenhead grid square, or ``''`` if not yet known.
+        """
+        parts = [p.upper() for p in (call, grid) if p]
+        self._station_label.setText("  ".join(parts))
 
     def set_pskr_status(self, text: str, ok: bool | None = None) -> None:
         """Update the PSK Reporter connection status indicator in the status bar.
@@ -530,7 +655,7 @@ class MainWindow(QMainWindow):
         Parameters
         ----------
         index : int
-            Cluster index: ``1`` for T1, ``2`` for T2.
+            Cluster index: ``1``-``4`` for T1-T4.
         text : str
             Status text to display (e.g. ``'T1: connected'``).
         ok : bool or None, optional
@@ -544,6 +669,8 @@ class MainWindow(QMainWindow):
             color = "#cc8800"
         else:
             color = "#888888"
-        label = self._sb_t1 if index == 1 else self._sb_t2
+        label = self._sb_telnet.get(index)
+        if label is None:
+            return
         label.setStyleSheet(f"padding: 0 6px; color: {color};")
         label.setText(text)

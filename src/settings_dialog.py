@@ -14,9 +14,9 @@ from pathlib import Path
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
-    QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QMessageBox, QPushButton, QRadioButton, QSpinBox, QTabWidget, QVBoxLayout,
-    QButtonGroup, QWidget,
+    QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
+    QLineEdit, QMessageBox, QPushButton, QRadioButton, QSpinBox, QTabWidget,
+    QVBoxLayout, QButtonGroup, QWidget,
 )
 
 from adif_log import RUMLOGNG_DB_PATH
@@ -60,6 +60,20 @@ class SettingsDialog(QDialog):
                  telnet2_host: str = '',
                  telnet2_port: int = 7300,
                  telnet2_callsign: str = '',
+                 telnet3_enabled: bool = False,
+                 telnet3_host: str = '',
+                 telnet3_port: int = 7300,
+                 telnet3_callsign: str = '',
+                 telnet4_enabled: bool = False,
+                 telnet4_host: str = '',
+                 telnet4_port: int = 7300,
+                 telnet4_callsign: str = '',
+                 telnet_us_ca_spotters_only: bool = True,
+                 pskr_enabled: bool = True,
+                 pskr_host: str = 'mqtt.pskreporter.info',
+                 pskr_port: int = 1883,
+                 pskr_service_name: str = 'PSK Reporter',
+                 pskr_reshow_secs: int = 300,
                  cty_path: str = '',
                  parent=None) -> None:
         """Build and populate the settings dialog.
@@ -111,6 +125,37 @@ class SettingsDialog(QDialog):
             TCP port for cluster 2.  Default ``7300``.
         telnet2_callsign : str, optional
             Login callsign for cluster 2.  Default ``''``.
+        telnet3_enabled : bool, optional
+            Whether DX Cluster 3 is enabled.  Default ``False``.
+        telnet3_host : str, optional
+            Hostname or IP address for cluster 3.  Default ``''``.
+        telnet3_port : int, optional
+            TCP port for cluster 3.  Default ``7300``.
+        telnet3_callsign : str, optional
+            Login callsign for cluster 3.  Default ``''``.
+        telnet4_enabled : bool, optional
+            Whether DX Cluster 4 is enabled.  Default ``False``.
+        telnet4_host : str, optional
+            Hostname or IP address for cluster 4.  Default ``''``.
+        telnet4_port : int, optional
+            TCP port for cluster 4.  Default ``7300``.
+        telnet4_callsign : str, optional
+            Login callsign for cluster 4.  Default ``''``.
+        telnet_us_ca_spotters_only : bool, optional
+            Whether to discard DX Cluster spots whose reporting station is
+            outside the US/Canada.  Default ``True``.
+        pskr_enabled : bool, optional
+            Whether the PSK Reporter MQTT connection is enabled.  Default ``True``.
+        pskr_host : str, optional
+            PSK Reporter MQTT broker hostname.  Default ``'mqtt.pskreporter.info'``.
+        pskr_port : int, optional
+            PSK Reporter MQTT broker port.  Default ``1883``.
+        pskr_service_name : str, optional
+            Free-text label for the PSK Reporter connection, for reference only.
+            Default ``'PSK Reporter'``.
+        pskr_reshow_secs : int, optional
+            Minimum seconds between successive table entries for the same
+            PSK Reporter callsign.  Default is ``300``.
         cty_path : str, optional
             Path to the current cached CTY plist file (used only for display).
             Default ``''``.
@@ -287,45 +332,98 @@ class SettingsDialog(QDialog):
         self._update_fcc_label()
 
         # ── DX Cluster (Telnet) ───────────────────────────────────────────────
+        telnet_filter_box = QGroupBox("DX Cluster Filtering")
+        telnet_filter_layout = QVBoxLayout(telnet_filter_box)
+        self._telnet_us_ca_only = QCheckBox("Only show spots from US/Canada spotters")
+        self._telnet_us_ca_only.setChecked(telnet_us_ca_spotters_only)
+        telnet_filter_layout.addWidget(self._telnet_us_ca_only)
+        telnet_filter_note = QLabel(
+            "When checked, a spot is shown only if the reporting/spotting "
+            "station (not the DX station) is in the US or Canada.  Uncheck "
+            "to see spots from any spotter worldwide."
+        )
+        telnet_filter_note.setWordWrap(True)
+        telnet_filter_note.setStyleSheet("color: #999999; font-size: 10pt;")
+        telnet_filter_layout.addWidget(telnet_filter_note)
+
         telnet_box = QGroupBox("DX Cluster (Telnet)")
-        telnet_layout = QVBoxLayout(telnet_box)
+        telnet_layout = QGridLayout(telnet_box)
 
-        # Cluster 1
-        c1_box = QGroupBox("Cluster 1")
-        c1_form = QFormLayout(c1_box)
-        self._t1_enabled = QCheckBox("Enable")
-        self._t1_enabled.setChecked(telnet1_enabled)
-        self._t1_host = QLineEdit(telnet1_host)
-        self._t1_host.setPlaceholderText("e.g. dxc.k0xm.net")
-        self._t1_port = QSpinBox()
-        self._t1_port.setRange(1, 65535)
-        self._t1_port.setValue(telnet1_port)
-        self._t1_call = QLineEdit(telnet1_callsign.upper())
-        self._t1_call.setPlaceholderText("Your callsign")
-        c1_form.addRow("", self._t1_enabled)
-        c1_form.addRow("Host:", self._t1_host)
-        c1_form.addRow("Port:", self._t1_port)
-        c1_form.addRow("Callsign:", self._t1_call)
+        def _build_cluster_box(
+            title: str, enabled: bool, host: str, port: int, callsign: str,
+            host_placeholder: str,
+        ) -> tuple[QGroupBox, QCheckBox, QLineEdit, QSpinBox, QLineEdit]:
+            # Build one "Cluster N" group box; returns the box plus its widgets.
+            box = QGroupBox(title)
+            form = QFormLayout(box)
+            enabled_cb = QCheckBox("Enable")
+            enabled_cb.setChecked(enabled)
+            host_edit = QLineEdit(host)
+            host_edit.setPlaceholderText(host_placeholder)
+            port_spin = QSpinBox()
+            port_spin.setRange(1, 65535)
+            port_spin.setValue(port)
+            call_edit = QLineEdit(callsign.upper())
+            call_edit.setPlaceholderText("Your callsign")
+            form.addRow("", enabled_cb)
+            form.addRow("Host:", host_edit)
+            form.addRow("Port:", port_spin)
+            form.addRow("Callsign:", call_edit)
+            return box, enabled_cb, host_edit, port_spin, call_edit
 
-        # Cluster 2
-        c2_box = QGroupBox("Cluster 2")
-        c2_form = QFormLayout(c2_box)
-        self._t2_enabled = QCheckBox("Enable")
-        self._t2_enabled.setChecked(telnet2_enabled)
-        self._t2_host = QLineEdit(telnet2_host)
-        self._t2_host.setPlaceholderText("e.g. dxc.w3lpl.net")
-        self._t2_port = QSpinBox()
-        self._t2_port.setRange(1, 65535)
-        self._t2_port.setValue(telnet2_port)
-        self._t2_call = QLineEdit(telnet2_callsign.upper())
-        self._t2_call.setPlaceholderText("Your callsign")
-        c2_form.addRow("", self._t2_enabled)
-        c2_form.addRow("Host:", self._t2_host)
-        c2_form.addRow("Port:", self._t2_port)
-        c2_form.addRow("Callsign:", self._t2_call)
+        c1_box, self._t1_enabled, self._t1_host, self._t1_port, self._t1_call = (
+            _build_cluster_box("Cluster 1", telnet1_enabled, telnet1_host,
+                               telnet1_port, telnet1_callsign, "e.g. dxc.k0xm.net")
+        )
+        c2_box, self._t2_enabled, self._t2_host, self._t2_port, self._t2_call = (
+            _build_cluster_box("Cluster 2", telnet2_enabled, telnet2_host,
+                               telnet2_port, telnet2_callsign, "e.g. dxc.w3lpl.net")
+        )
+        c3_box, self._t3_enabled, self._t3_host, self._t3_port, self._t3_call = (
+            _build_cluster_box("Cluster 3", telnet3_enabled, telnet3_host,
+                               telnet3_port, telnet3_callsign, "e.g. dxc.ve7cc.net")
+        )
+        c4_box, self._t4_enabled, self._t4_host, self._t4_port, self._t4_call = (
+            _build_cluster_box("Cluster 4", telnet4_enabled, telnet4_host,
+                               telnet4_port, telnet4_callsign, "e.g. dxc.nc7j.com")
+        )
 
-        telnet_layout.addWidget(c1_box)
-        telnet_layout.addWidget(c2_box)
+        # 2x2 grid: cluster 1/2 on the top row, 3/4 on the bottom row.
+        telnet_layout.addWidget(c1_box, 0, 0)
+        telnet_layout.addWidget(c2_box, 0, 1)
+        telnet_layout.addWidget(c3_box, 1, 0)
+        telnet_layout.addWidget(c4_box, 1, 1)
+
+        # ── PSK Reporter ──────────────────────────────────────────────────────
+        pskr_box = QGroupBox("PSK Reporter (MQTT)")
+        pskr_form = QFormLayout(pskr_box)
+        self._pskr_enabled = QCheckBox("Enable")
+        self._pskr_enabled.setChecked(pskr_enabled)
+        self._pskr_host = QLineEdit(pskr_host)
+        self._pskr_host.setPlaceholderText("e.g. mqtt.pskreporter.info")
+        self._pskr_port = QSpinBox()
+        self._pskr_port.setRange(1, 65535)
+        self._pskr_port.setValue(pskr_port)
+        self._pskr_service_name = QLineEdit(pskr_service_name)
+        self._pskr_service_name.setPlaceholderText("e.g. PSK Reporter")
+        self._pskr_reshow_spin = QSpinBox()
+        self._pskr_reshow_spin.setRange(0, 3600)
+        self._pskr_reshow_spin.setSuffix(" s")
+        self._pskr_reshow_spin.setValue(pskr_reshow_secs)
+        pskr_form.addRow("", self._pskr_enabled)
+        pskr_form.addRow("MQTT Host:", self._pskr_host)
+        pskr_form.addRow("MQTT Port:", self._pskr_port)
+        pskr_form.addRow("Service Name:", self._pskr_service_name)
+        pskr_form.addRow("Call Re-show Interval:", self._pskr_reshow_spin)
+
+        pskr_note = QLabel(
+            "Service Name is for reference only (shown in this dialog); it has "
+            "no effect on the MQTT connection itself.  Call Re-show Interval "
+            "limits how often the same callsign can jump back to the top of "
+            "the spot table (0 = no limit)."
+        )
+        pskr_note.setWordWrap(True)
+        pskr_note.setStyleSheet("color: #999999; font-size: 10pt;")
 
         # ── buttons ───────────────────────────────────────────────────────────
         buttons = QDialogButtonBox(
@@ -350,6 +448,13 @@ class SettingsDialog(QDialog):
         tab_wsjt_layout.addStretch()
         tabs.addTab(tab_wsjt, "WSJT-X")
 
+        tab_pskr = QWidget()
+        tab_pskr_layout = QVBoxLayout(tab_pskr)
+        tab_pskr_layout.addWidget(pskr_box)
+        tab_pskr_layout.addWidget(pskr_note)
+        tab_pskr_layout.addStretch()
+        tabs.addTab(tab_pskr, "PSK Reporter")
+
         tab_cmd = QWidget()
         tab_cmd_layout = QVBoxLayout(tab_cmd)
         tab_cmd_layout.addWidget(cmd_box)
@@ -359,6 +464,7 @@ class SettingsDialog(QDialog):
 
         tab_cluster = QWidget()
         tab_cluster_layout = QVBoxLayout(tab_cluster)
+        tab_cluster_layout.addWidget(telnet_filter_box)
         tab_cluster_layout.addWidget(telnet_box)
         tab_cluster_layout.addStretch()
         tabs.addTab(tab_cluster, "DX Cluster")
@@ -534,6 +640,76 @@ class SettingsDialog(QDialog):
     def telnet2_callsign(self) -> str:
         """Login callsign for DX Cluster 2 (stripped, upper-case)."""
         return self._t2_call.text().strip().upper()
+
+    @property
+    def telnet3_enabled(self) -> bool:
+        """Whether DX Cluster 3 is enabled."""
+        return self._t3_enabled.isChecked()
+
+    @property
+    def telnet3_host(self) -> str:
+        """Hostname or IP address for DX Cluster 3."""
+        return self._t3_host.text().strip()
+
+    @property
+    def telnet3_port(self) -> int:
+        """TCP port for DX Cluster 3."""
+        return self._t3_port.value()
+
+    @property
+    def telnet3_callsign(self) -> str:
+        """Login callsign for DX Cluster 3 (stripped, upper-case)."""
+        return self._t3_call.text().strip().upper()
+
+    @property
+    def telnet4_enabled(self) -> bool:
+        """Whether DX Cluster 4 is enabled."""
+        return self._t4_enabled.isChecked()
+
+    @property
+    def telnet4_host(self) -> str:
+        """Hostname or IP address for DX Cluster 4."""
+        return self._t4_host.text().strip()
+
+    @property
+    def telnet4_port(self) -> int:
+        """TCP port for DX Cluster 4."""
+        return self._t4_port.value()
+
+    @property
+    def telnet4_callsign(self) -> str:
+        """Login callsign for DX Cluster 4 (stripped, upper-case)."""
+        return self._t4_call.text().strip().upper()
+
+    @property
+    def telnet_us_ca_spotters_only(self) -> bool:
+        """Whether to discard DX Cluster spots from non-US/Canada spotters."""
+        return self._telnet_us_ca_only.isChecked()
+
+    @property
+    def pskr_enabled(self) -> bool:
+        """Whether the PSK Reporter MQTT connection is enabled."""
+        return self._pskr_enabled.isChecked()
+
+    @property
+    def pskr_host(self) -> str:
+        """PSK Reporter MQTT broker hostname (stripped)."""
+        return self._pskr_host.text().strip()
+
+    @property
+    def pskr_port(self) -> int:
+        """PSK Reporter MQTT broker port."""
+        return self._pskr_port.value()
+
+    @property
+    def pskr_service_name(self) -> str:
+        """Free-text reference label for the PSK Reporter connection (stripped)."""
+        return self._pskr_service_name.text().strip()
+
+    @property
+    def pskr_reshow_secs(self) -> int:
+        """Minimum seconds between successive table entries for the same PSK Reporter call."""
+        return self._pskr_reshow_spin.value()
 
     @property
     def cty_refreshed(self) -> bool:
