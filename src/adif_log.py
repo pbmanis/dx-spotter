@@ -24,6 +24,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+import fcc_db
+
 _5BD_BANDS  = frozenset({'80M', '40M', '20M', '15M', '10M'})
 _WARC_BANDS = frozenset({'30M', '17M', '12M'})
 _DIGITAL_MODES = frozenset({
@@ -157,6 +159,46 @@ class ADIFLog:
         """Number of distinct DXCC entities confirmed by paper QSL only (not LoTW)."""
         return len(self._confirmed_paper_dxcc - self._confirmed_lotw_dxcc)
 
+    def list_confirmed_paper_only_dxcc(self) -> list[int]:
+        """Return a sorted list of DXCC entity numbers confirmed by paper QSL only.
+
+        Returns
+        -------
+        list[int]
+            Sorted list of DXCC entity numbers that have at least one confirmed
+            QSO via paper QSL but *no* confirmed QSOs via LoTW.
+        """
+        return sorted(self._confirmed_paper_dxcc - self._confirmed_lotw_dxcc)
+
+    def paper_only_confirmed_entries(self) -> list[dict]:
+        """Return confirmed QSO records for DXCC entities with paper QSL only (no LoTW).
+
+        For each DXCC entity that has paper QSL confirmation but no LoTW
+        confirmation, all of its confirmed QSO detail records are returned.
+        The list is unsorted; callers should sort as needed.
+
+        Returns
+        -------
+        list[dict]
+            Each dict contains ``dxcc`` (int), ``call``, ``date``, ``time``,
+            ``band``, and ``mode`` (all str except ``dxcc``).
+        """
+        paper_only: set[int] = self._confirmed_paper_dxcc - self._confirmed_lotw_dxcc
+        entries: list[dict] = []
+        for (dxcc, band, mode), details in self._confirmed_details.items():
+            if dxcc not in paper_only:
+                continue
+            for d in details:
+                entries.append({
+                    'dxcc': dxcc,
+                    'call': d['call'],
+                    'date': d['date'],
+                    'time': d.get('time', ''),
+                    'band': band,
+                    'mode': mode,
+                })
+        return entries
+
     def confirmed_5bd_count(self, band: str) -> int:
         """Count distinct DXCC entities confirmed on a given band.
 
@@ -286,9 +328,12 @@ class ADIFLog:
 
             try:
                 unix_ts = float(cf_ts) + _CF_EPOCH
-                date_str = datetime.fromtimestamp(unix_ts, tz=timezone.utc).strftime('%Y%m%d')
+                _dt = datetime.fromtimestamp(unix_ts, tz=timezone.utc)
+                date_str = _dt.strftime('%Y%m%d')
+                time_str = _dt.strftime('%H%M%S')
             except (TypeError, ValueError, OSError):
                 date_str = ''
+                time_str = ''
 
             grid = (user_1 or '').upper().strip()
             key = (dxcc, band, mode)
@@ -312,7 +357,7 @@ class ADIFLog:
                 self._confirmed_modes.setdefault(dxcc, set()).add(mode)
                 self._confirmed_by_dxcc.setdefault(dxcc, {}).setdefault((band, mode), []).append(call)
                 self._confirmed_details.setdefault(key, []).append(
-                    {'call': call, 'date': date_str, 'grid': grid}
+                    {'call': call, 'date': date_str, 'time': time_str, 'grid': grid}
                 )
             else:
                 self._worked_details.setdefault(key, []).append(
@@ -390,6 +435,8 @@ class ADIFLog:
             call = rec.get('CALL', '')
             my_grid = rec.get('MY_GRIDSQUARE', rec.get('MYGRID', '')).upper().strip()
             qso_date = rec.get('QSO_DATE', '')
+            time_on = rec.get('TIME_ON', '')
+            time_str = time_on[:6] if len(time_on) >= 6 else time_on
             key  = (dxcc, band, mode)
             self._worked.add(key)
             self._worked_dxcc.add(dxcc)
@@ -410,7 +457,7 @@ class ADIFLog:
                 self._confirmed_modes.setdefault(dxcc, set()).add(mode)
                 self._confirmed_by_dxcc.setdefault(dxcc, {}).setdefault((band, mode), []).append(call)
                 self._confirmed_details.setdefault(key, []).append({
-                    'call': call, 'date': qso_date, 'grid': my_grid,
+                    'call': call, 'date': qso_date, 'time': time_str, 'grid': my_grid,
                 })
             else:
                 self._worked_details.setdefault(key, []).append({
@@ -663,22 +710,23 @@ class ADIFLog:
             return 'confirmed_other'
         return 'new'
 
-    def confirmed_band_modes(self, dxcc: int) -> dict[tuple[str, str], list[str]]:
-        """Return a mapping of ``(band, mode)`` → ``[callsigns]`` for confirmed QSOs.
+    # Never called
+    # def confirmed_band_modes(self, dxcc: int) -> dict[tuple[str, str], list[str]]:
+    #     """Return a mapping of ``(band, mode)`` → ``[callsigns]`` for confirmed QSOs.
 
-        Parameters
-        ----------
-        dxcc : int
-            ADIF DXCC entity number.
+    #     Parameters
+    #     ----------
+    #     dxcc : int
+    #         ADIF DXCC entity number.
 
-        Returns
-        -------
-        dict[tuple[str, str], list[str]]
-            Dict mapping ``(band, mode)`` tuples to lists of confirmed
-            callsigns worked on that combination.  Returns an empty dict when
-            no confirmed QSOs exist for this entity.
-        """
-        return self._confirmed_by_dxcc.get(dxcc, {})
+    #     Returns
+    #     -------
+    #     dict[tuple[str, str], list[str]]
+    #         Dict mapping ``(band, mode)`` tuples to lists of confirmed
+    #         callsigns worked on that combination.  Returns an empty dict when
+    #         no confirmed QSOs exist for this entity.
+    #     """
+    #     return self._confirmed_by_dxcc.get(dxcc, {})
 
     def confirmed_details(self, dxcc: int, band: str, mode: str) -> list[dict[str, str]]:
         """Return per-QSO detail records for confirmed contacts on an exact band/mode.
@@ -761,6 +809,42 @@ class ADIFLog:
             empty string when the callsign has no US state recorded in the log.
         """
         return self._call_state.get(call.upper(), '')
+
+    def resolve_was_state(self, call: str, dxcc: int) -> str:
+        """Resolve the US state for a callsign for WAS award purposes.
+
+        Tries the logged QSO state first (:meth:`call_state`); if the call has
+        no logged US contact, falls back to an FCC callsign-database lookup.
+        The FCC fallback is skipped for portable/mobile callsigns (containing
+        ``'/'``) that have no logged state, since the FCC record reflects the
+        operator's home license, not necessarily the state they are currently
+        transmitting from.
+
+        Parameters
+        ----------
+        call : str
+            Amateur radio callsign (case-insensitive).
+        dxcc : int
+            ADIF DXCC entity number of the spotted station.  Only entity
+            ``291`` (mainland USA) can have a WAS state; any other value
+            returns ``''`` immediately.
+
+        Returns
+        -------
+        str
+            Two-letter US state abbreviation, or ``''`` if the entity isn't
+            the mainland US, or no state could be resolved from either the
+            log or the FCC database.
+        """
+        if dxcc != 291:
+            return ''
+        state = self.call_state(call)
+        if state:
+            return state
+        if '/' in call:
+            return ''
+        info = fcc_db.lookup_callsign_info(call)
+        return info.get('state', '') if info else ''
 
     def was_qso_details(
         self, state: str, band: str
