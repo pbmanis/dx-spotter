@@ -9,6 +9,7 @@ import signal
 import sys
 import threading
 import time
+from typing import Callable
 
 from colorama import Fore, Style
 from pyhamtools import LookupLib, Callinfo
@@ -25,11 +26,12 @@ import cty_cache
 import fcc_db
 from main_window import MainWindow, make_app_icon
 from mqtt_listener import MqttListener
+from rigctld_client import RigctldClient, is_available as rigctld_available
 from settings_dialog import SettingsDialog
 from telnet_cluster import TelnetCluster
 from wsjtx_listener import WsjtxListener, freq_to_band
 
-# Ham band frequency boundaries in kHz; used to map Commander VFO to band string.
+# Ham band frequency boundaries in kHz; used to map the rig-control VFO to band string.
 _BAND_RANGES: list[tuple[float, float, str]] = [
     (1800.0,   2000.0,  '160m'),
     (3500.0,   4000.0,  '80m'),
@@ -65,7 +67,9 @@ class DXSpotter:
     * Double-clicks on the spot table trigger :meth:`_on_spot_activated`, depending
       on the mode, these are sent to:
         - FT8/FT4/FT2: sends a Reply / Configure message back to WSJT-X.
-        - CW, SSB: Sends a command to RumLogNG to set the radio frequency and mode.
+        - CW, SSB: sends a command to the active rig-control backend
+          (DX Lab Commander or rigctld — see :attr:`~appconfig.AppConfig.rig_backend`)
+          to set the radio frequency and mode.
 
     Attributes
     ----------
@@ -138,9 +142,9 @@ class DXSpotter:
         self._criterion: str = 'mixed'
         self._config: AppConfig = AppConfig()
         self._last_wsjt_heartbeat: float = 0.0  # epoch of most recent HB from WSJT-X
-        self._commander_freq_khz: float = 0.0   # latest RX freq from Commander (GIL-safe)
-        self._commander_stop_event: threading.Event = threading.Event()
-        self._commander_poll_thread: threading.Thread | None = None
+        self._rig_freq_khz: float = 0.0   # latest RX freq from the active rig-control backend (GIL-safe)
+        self._rig_poll_stop_event: threading.Event = threading.Event()
+        self._rig_poll_thread: threading.Thread | None = None
         self._fcc_build_thread: threading.Thread | None = None
         self._fcc_status_message: str = ''  # written by worker, read by timer tick
 
@@ -157,6 +161,37 @@ class DXSpotter:
             mode = 'FT8'
         elif mode == 'CS':
             mode = 'CW'
+
+    def _rig_backend_settings(
+        self,
+    ) -> tuple[type, Callable[[str, int], bool], str, int, float, float]:
+        """Return connection settings for the active rig-control backend.
+
+        Returns
+        -------
+        tuple
+            ``(client_cls, is_available_fn, host, port, timeout, verify_delay)``
+            for whichever backend :attr:`~appconfig.AppConfig.rig_backend`
+            selects.  ``client_cls`` exposes ``get_rx_freq_khz()`` and
+            ``set_freq_and_mode(freq_khz, mode, verify_delay=...)``, matching
+            interfaces shared by :class:`~commander_client.CommanderClient`
+            and :class:`~rigctld_client.RigctldClient`.
+        """
+        if self._config.rig_backend == 'rigctld':
+            return (
+                RigctldClient, rigctld_available,
+                self._config.rigctld_host, self._config.rigctld_port,
+                self._config.rigctld_timeout, self._config.rigctld_verify_delay,
+            )
+        return (
+            CommanderClient, commander_available,
+            self._config.commander_host, self._config.commander_port,
+            self._config.commander_timeout, self._config.commander_verify_delay,
+        )
+
+    def _digital_mode_str(self) -> str:
+        """Return the active backend's mode string for USB-data (FT8/FT4/FT2) QSY."""
+        return 'PKTUSB' if self._config.rig_backend == 'rigctld' else 'DATA-U'
 
     # -- helpers --------------------------------------------------------------
 
@@ -526,6 +561,8 @@ class DXSpotter:
         # the signal directly so the station is reachable by definition.
         # Emits the spot dict to MainWindow.new_spot (thread-safe Qt signal).
         assert self.args is not None
+        if not self._config.wsjt_show_decodes:
+            return
         self.wsjt_counter += 1
 
         country = self.get_country_text(dx_call)
@@ -755,39 +792,40 @@ class DXSpotter:
 
         loc = spot_data.get('loc', '')
 
-        # QSY the rig to the standard FT8/FT4/FT2 dial frequency so Commander
-        # does not leave the radio on the previous CW/SSB frequency.
-        if self._config.commander_enabled:
+        # QSY the rig to the standard FT8/FT4/FT2 dial frequency so the rig-
+        # control backend does not leave the radio on the previous CW/SSB
+        # frequency.
+        if self._config.rig_control_enabled:
             band = spot_data.get('b', '')
             dial_hz = self.get_base_freq(band, mode)
             if dial_hz > 0:
                 dial_khz = dial_hz / 1000.0
-                _host = self._config.commander_host
-                _port = self._config.commander_port
-                _timeout = self._config.commander_timeout
-                _verify_delay = self._config.commander_verify_delay
+                client_cls, avail_fn, _host, _port, _timeout, _verify_delay = (
+                    self._rig_backend_settings()
+                )
+                digital_mode = self._digital_mode_str()
                 _call = call
 
                 def _qsy_digital() -> None:
                     try:
-                        if not commander_available(_host, _port):
-                            print(f"Commander not reachable at {_host}:{_port}")
+                        if not avail_fn(_host, _port):
+                            print(f"Rig control not reachable at {_host}:{_port}")
                             return
-                        client = CommanderClient(host=_host, port=_port, timeout=_timeout)
+                        client = client_cls(host=_host, port=_port, timeout=_timeout)
                         result = client.set_freq_and_mode(
-                            dial_khz, 'DATA-U', verify_delay=_verify_delay
+                            dial_khz, digital_mode, verify_delay=_verify_delay
                         )
                         if result.success:
                             print(
-                                f"Commander QSY: {_call} → {dial_khz:.3f} kHz DATA-U "
+                                f"Rig QSY: {_call} → {dial_khz:.3f} kHz {digital_mode} "
                                 f"({mode})"
                             )
                         else:
                             print(
-                                f"Commander QSY failed for {_call}: {result.errors}"
+                                f"Rig QSY failed for {_call}: {result.errors}"
                             )
                     except Exception as exc:
-                        print(f"Commander QSY exception for {_call}: {exc}")
+                        print(f"Rig QSY exception for {_call}: {exc}")
 
                 threading.Thread(target=_qsy_digital, daemon=True).start()
 
@@ -900,47 +938,48 @@ class DXSpotter:
             self.window.call_active.emit(call)
 
     def _activate_rig_spot(self, spot_data: dict) -> None:
-        # QSY the rig to a CW/SSB spot via DX Lab Commander.
+        # QSY the rig to a CW/SSB spot via the active rig-control backend.
         # Runs in a daemon thread so the post-set verify delay (~0.75 s) does
         # not block the Qt main thread.
         # For PSK/telnet CW and SSB spots, freq_offset is the absolute
         # frequency in Hz (self.freqs has no entry for these modes, so
         # get_freq_offset returns payload['f'] - 0 = payload['f']).
-        if not self._config.commander_enabled:
-            print(f"Double-click: Commander not enabled for "
+        if not self._config.rig_control_enabled:
+            print(f"Double-click: rig control not enabled for "
                   f"{spot_data.get('call')} ({spot_data.get('md')})")
             return
         psk_mode = spot_data.get('md', '').upper()
         freq_khz = spot_data.get('freq_offset', 0) / 1000.0
-        cmd_mode = self._psk_mode_to_commander(psk_mode, freq_khz)
-        if cmd_mode is None:
-            print(f"Double-click: no Commander mode mapping for {psk_mode!r}")
+        rig_mode = self._psk_mode_to_rig_mode(psk_mode, freq_khz)
+        if rig_mode is None:
+            print(f"Double-click: no rig mode mapping for {psk_mode!r}")
             return
-        host = self._config.commander_host
-        port = self._config.commander_port
-        timeout = self._config.commander_timeout
-        verify_delay = self._config.commander_verify_delay
+        client_cls, avail_fn, host, port, timeout, verify_delay = (
+            self._rig_backend_settings()
+        )
         call = spot_data.get('call', '')
 
         def _run() -> None:
-            if not commander_available(host, port):
-                print(f"Commander not reachable at {host}:{port}")
+            if not avail_fn(host, port):
+                print(f"Rig control not reachable at {host}:{port}")
                 return
-            client = CommanderClient(host=host, port=port, timeout=timeout)
-            result = client.set_freq_and_mode(freq_khz, cmd_mode,
+            client = client_cls(host=host, port=port, timeout=timeout)
+            result = client.set_freq_and_mode(freq_khz, rig_mode,
                                               verify_delay=verify_delay)
             if result.success:
-                print(f"Commander QSY: {call} → {freq_khz:.3f} kHz {cmd_mode}")
+                print(f"Rig QSY: {call} → {freq_khz:.3f} kHz {rig_mode}")
             else:
-                print(f"Commander QSY failed for {call}: {result.errors}")
+                print(f"Rig QSY failed for {call}: {result.errors}")
 
         threading.Thread(target=_run, daemon=True).start()
 
     @staticmethod
-    def _psk_mode_to_commander(psk_mode: str, freq_khz: float) -> str | None:
-        # Map a spot-table mode string to a Commander mode string.
-        # SSB is split into LSB (below 10 MHz / 40 m and lower) and USB above.
-        # Digital modes return None — they are handled via WSJT-X, not Commander.
+    def _psk_mode_to_rig_mode(psk_mode: str, freq_khz: float) -> str | None:
+        # Map a spot-table mode string to a rig-control mode string. Shared by
+        # both backends: Commander and rigctld (Hamlib) both accept the same
+        # names for CW/AM/FM/LSB/USB. SSB is split into LSB (below 10 MHz /
+        # 40 m and lower) and USB above. Digital modes return None — they are
+        # handled via WSJT-X, not rig control.
         if psk_mode == 'CW':
             return 'CW'
         if psk_mode == 'SSB':
@@ -956,50 +995,56 @@ class DXSpotter:
                 return band
         return None
 
-    def _commander_poll_loop(self) -> None:
-        # Background daemon thread: query Commander for RX frequency every 1 s.
-        # Writes result to _commander_freq_khz (GIL-safe float); 0.0 on error.
-        while not self._commander_stop_event.is_set():
-            if self._config.commander_enabled:
+    def _rig_poll_loop(self) -> None:
+        # Background daemon thread: query the active rig-control backend for
+        # RX frequency every 1 s. Writes result to _rig_freq_khz (GIL-safe
+        # float); 0.0 on error.
+        while not self._rig_poll_stop_event.is_set():
+            if self._config.rig_control_enabled:
+                client_cls, _avail, host, port, _timeout, _delay = (
+                    self._rig_backend_settings()
+                )
                 try:
-                    client = CommanderClient(
-                        host=self._config.commander_host,
-                        port=self._config.commander_port,
-                        timeout=0.15,
-                    )
-                    self._commander_freq_khz = client.get_rx_freq_khz()
+                    client = client_cls(host=host, port=port, timeout=0.15)
+                    self._rig_freq_khz = client.get_rx_freq_khz()
                 except OSError:
-                    self._commander_freq_khz = 0.0
+                    self._rig_freq_khz = 0.0
             else:
-                self._commander_freq_khz = 0.0
-            self._commander_stop_event.wait(1.0)
+                self._rig_freq_khz = 0.0
+            self._rig_poll_stop_event.wait(1.0)
 
-    def _update_commander_band(self) -> None:
-        # Called from the 250 ms Qt timer.  If Commander has seen a new band,
-        # update the Band parameter — which triggers the normal settings-change
-        # chain (MQTT resubscribe, table clear, WAS label update).
-        if not self._config.commander_enabled or self.window is None:
+    def _update_rig_band(self) -> None:
+        # Called from the 250 ms Qt timer.  If the active rig-control backend
+        # has seen a new band, update the Band parameter — which triggers the
+        # normal settings-change chain (MQTT resubscribe, table clear, WAS
+        # label update).
+        if (not self._config.rig_control_enabled
+                or not self._config.rig_track_band
+                or self.window is None):
             return
-        freq = self._commander_freq_khz
+        freq = self._rig_freq_khz
         if freq <= 0.0:
             return
         band = self._freq_to_band(freq)
         if band is None or band == self.args.band:
             return
+        if self.args.terminal:
+            print(f"Rig VFO override: reported {freq:.1f} kHz -> band {band!r} "
+                  f"(replacing filter {self.args.band!r})")
         self.window._params.child('Data Filters').child('Band').setValue(band)  # noqa: SLF001
 
     def _effective_bandmap_band(self) -> str | None:
         # Determine the band the bandmap should display, in priority order:
-        # 1. Explicit band filter (args.band) — set by user or Commander tracking.
-        # 2. Commander VFO frequency (if connected).
+        # 1. Explicit band filter (args.band) — set by user or rig-control tracking.
+        # 2. Active rig-control backend's VFO frequency (if connected).
         # 3. WSJT-X dial frequency (if listener is active and tuned).
         # 4. None — bandmap shows nothing.
         if self.args is None:
             return None
         if self.args.band is not None:
             return self.args.band
-        if self._commander_freq_khz > 0:
-            return self._freq_to_band(self._commander_freq_khz)
+        if self._rig_freq_khz > 0:
+            return self._freq_to_band(self._rig_freq_khz)
         if self.wsjt_listener is not None and self.wsjt_listener.dial_freq > 0:
             return freq_to_band(self.wsjt_listener.dial_freq)
         return None
@@ -1142,7 +1187,7 @@ class DXSpotter:
             self._update_wsjt_status()
             self._update_pskr_status()
             self._update_telnet_status()
-            self._update_commander_band()
+            self._update_rig_band()
             self.window.set_bandmap_band(self._effective_bandmap_band())
             if self._fcc_status_message:
                 self.window.statusBar().showMessage(self._fcc_status_message, 6000)
@@ -1151,12 +1196,12 @@ class DXSpotter:
         self._count_timer.timeout.connect(_tick)
         self._count_timer.start(250)
 
-        self._commander_poll_thread = threading.Thread(
-            target=self._commander_poll_loop,
+        self._rig_poll_thread = threading.Thread(
+            target=self._rig_poll_loop,
             daemon=True,
-            name='commander-band-poll',
+            name='rig-band-poll',
         )
-        self._commander_poll_thread.start()
+        self._rig_poll_thread.start()
 
         if cfg.pskr_enabled:
             self._mqtt_listener = MqttListener(
@@ -1216,7 +1261,7 @@ class DXSpotter:
 
         def _save_and_cleanup():
             self._save_config()
-            self._commander_stop_event.set()
+            self._rig_poll_stop_event.set()
             if self._mqtt_listener is not None:
                 self._mqtt_listener.stop()
             if self.wsjt_listener is not None:
@@ -1346,10 +1391,16 @@ class DXSpotter:
             rx_grid_prefixes=cfg.rx_grid_prefixes,
             wsjt_reshow_secs=cfg.wsjt_reshow_secs,
             wsjt_no_spot_mins=cfg.wsjt_no_spot_mins,
-            commander_enabled=cfg.commander_enabled,
+            wsjt_show_decodes=cfg.wsjt_show_decodes,
+            rig_control_enabled=cfg.rig_control_enabled,
+            rig_track_band=cfg.rig_track_band,
+            rig_backend=cfg.rig_backend,
             commander_port=cfg.commander_port,
             commander_timeout=cfg.commander_timeout,
             commander_verify_delay=cfg.commander_verify_delay,
+            rigctld_port=cfg.rigctld_port,
+            rigctld_timeout=cfg.rigctld_timeout,
+            rigctld_verify_delay=cfg.rigctld_verify_delay,
             telnet1_enabled=cfg.telnet1_enabled,
             telnet1_host=cfg.telnet1_host,
             telnet1_port=cfg.telnet1_port,
@@ -1390,10 +1441,16 @@ class DXSpotter:
         cfg.rx_grid_prefixes = dlg.rx_grid_prefixes
         cfg.wsjt_reshow_secs = dlg.wsjt_reshow_secs
         cfg.wsjt_no_spot_mins = dlg.wsjt_no_spot_mins
-        cfg.commander_enabled = dlg.commander_enabled
+        cfg.wsjt_show_decodes = dlg.wsjt_show_decodes
+        cfg.rig_control_enabled = dlg.rig_control_enabled
+        cfg.rig_track_band = dlg.rig_track_band
+        cfg.rig_backend = dlg.rig_backend
         cfg.commander_port = dlg.commander_port
         cfg.commander_timeout = dlg.commander_timeout
         cfg.commander_verify_delay = dlg.commander_verify_delay
+        cfg.rigctld_port = dlg.rigctld_port
+        cfg.rigctld_timeout = dlg.rigctld_timeout
+        cfg.rigctld_verify_delay = dlg.rigctld_verify_delay
 
         # Restart telnet clusters if any of their settings changed
         t1_changed = (

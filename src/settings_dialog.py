@@ -48,10 +48,16 @@ class SettingsDialog(QDialog):
                  rx_grid_prefixes: list[str] | None = None,
                  wsjt_reshow_secs: int = 300,
                  wsjt_no_spot_mins: int = 2,
-                 commander_enabled: bool = False,
+                 wsjt_show_decodes: bool = True,
+                 rig_control_enabled: bool = False,
+                 rig_track_band: bool = True,
+                 rig_backend: str = 'commander',
                  commander_port: int = 52002,
                  commander_timeout: float = 0.2,
                  commander_verify_delay: float = 0.75,
+                 rigctld_port: int = 4532,
+                 rigctld_timeout: float = 0.2,
+                 rigctld_verify_delay: float = 0.75,
                  telnet1_enabled: bool = False,
                  telnet1_host: str = '',
                  telnet1_port: int = 7300,
@@ -100,13 +106,33 @@ class SettingsDialog(QDialog):
         wsjt_no_spot_mins : int, optional
             Minutes without any Decode packet before the WSJT-X status turns
             yellow.  Default is ``2``.
-        commander_enabled : bool, optional
-            Whether Commander rig control is active.  Default ``False``.
+        wsjt_show_decodes : bool, optional
+            Whether WSJT-X decodes are added to the spot table and (when
+            ``-t``/``--terminal`` is active) printed to the terminal.
+            Default ``True``.
+        rig_control_enabled : bool, optional
+            Whether rig control (double-click QSY) is active.  Applies to
+            whichever backend ``rig_backend`` selects.  Default ``False``.
+        rig_track_band : bool, optional
+            Whether the active backend's reported VFO frequency is allowed to
+            override the Band filter.  Independent of ``rig_control_enabled``
+            so it can be turned off if the backend misreports frequency,
+            without losing double-click QSY.  Default ``True``.
+        rig_backend : str, optional
+            Which rig-control backend to use: ``'commander'`` or
+            ``'rigctld'``.  Default ``'commander'``.
         commander_port : int, optional
             TCP port Commander listens on.  Default ``52002``.
         commander_timeout : float, optional
             Per-query TCP receive timeout in seconds.  Default ``0.2``.
         commander_verify_delay : float, optional
+            Seconds to wait after a set command before reading back rig state.
+            Default ``0.75``.
+        rigctld_port : int, optional
+            TCP port rigctld listens on.  Default ``4532``.
+        rigctld_timeout : float, optional
+            Per-query TCP receive timeout in seconds.  Default ``0.2``.
+        rigctld_verify_delay : float, optional
             Seconds to wait after a set command before reading back rig state.
             Default ``0.75``.
         telnet1_enabled : bool, optional
@@ -250,11 +276,15 @@ class SettingsDialog(QDialog):
         self._no_spot_spin.setSuffix(" min")
         self._no_spot_spin.setValue(wsjt_no_spot_mins)
 
+        self._wsjt_show_cb = QCheckBox("Show WSJT-X decodes (table + terminal)")
+        self._wsjt_show_cb.setChecked(wsjt_show_decodes)
+
         udp_form.addRow("UDP Server Address:", self._addr_edit)
         udp_form.addRow("UDP Port:", self._port_spin)
         udp_form.addRow("Reporter Grid Prefixes:", self._rx_grid_edit)
         udp_form.addRow("Call Re-show Interval:", self._reshow_spin)
         udp_form.addRow("No-decode warning after:", self._no_spot_spin)
+        udp_form.addRow("", self._wsjt_show_cb)
 
         udp_note = QLabel(
             "Use 224.0.0.1 (multicast) so multiple apps (RUMlogNG, GridTracker…) "
@@ -263,12 +293,38 @@ class SettingsDialog(QDialog):
         udp_note.setWordWrap(True)
         udp_note.setStyleSheet("color: #999999; font-size: 10pt;")
 
-        # ── Commander / rig control ───────────────────────────────────────────
-        cmd_box = QGroupBox("Commander / Rig Control  (DX Lab Suite)")
-        cmd_form = QFormLayout(cmd_box)
+        # ── Communication (rig control) ───────────────────────────────────────
+        cmd_box = QGroupBox("Communication  (Rig Control)")
+        cmd_layout = QVBoxLayout(cmd_box)
 
-        self._cmd_enabled = QCheckBox("Enable Commander for CW / SSB spots")
-        self._cmd_enabled.setChecked(commander_enabled)
+        common_form = QFormLayout()
+        self._cmd_enabled = QCheckBox("Enable rig control for CW / SSB spots")
+        self._cmd_enabled.setChecked(rig_control_enabled)
+
+        self._cmd_track_band = QCheckBox("Track Band filter from VFO")
+        self._cmd_track_band.setChecked(rig_track_band)
+
+        self._backend_group = QButtonGroup(self)
+        self._rb_backend_commander = QRadioButton("DX Lab Commander")
+        self._rb_backend_rigctld = QRadioButton("rigctld (Hamlib / K2K3Controller)")
+        self._backend_group.addButton(self._rb_backend_commander, 0)
+        self._backend_group.addButton(self._rb_backend_rigctld, 1)
+        if rig_backend == 'rigctld':
+            self._rb_backend_rigctld.setChecked(True)
+        else:
+            self._rb_backend_commander.setChecked(True)
+        backend_row = QHBoxLayout()
+        backend_row.addWidget(self._rb_backend_commander)
+        backend_row.addWidget(self._rb_backend_rigctld)
+
+        common_form.addRow("", self._cmd_enabled)
+        common_form.addRow("", self._cmd_track_band)
+        common_form.addRow("Backend:", backend_row)
+        cmd_layout.addLayout(common_form)
+
+        # -- Commander-specific settings --
+        self._cmd_settings_box = QGroupBox("DX Lab Commander Settings")
+        cmd_form = QFormLayout(self._cmd_settings_box)
 
         self._cmd_port_spin = QSpinBox()
         self._cmd_port_spin.setRange(1024, 65535)
@@ -288,15 +344,49 @@ class SettingsDialog(QDialog):
         self._cmd_delay_spin.setSuffix(" s")
         self._cmd_delay_spin.setValue(commander_verify_delay)
 
-        cmd_form.addRow("", self._cmd_enabled)
         cmd_form.addRow("TCP Port:", self._cmd_port_spin)
         cmd_form.addRow("Query timeout:", self._cmd_timeout_spin)
         cmd_form.addRow("Verify delay:", self._cmd_delay_spin)
+        cmd_layout.addWidget(self._cmd_settings_box)
+
+        # -- rigctld-specific settings --
+        self._rigctld_settings_box = QGroupBox("rigctld Settings")
+        rigctld_form = QFormLayout(self._rigctld_settings_box)
+
+        self._rigctld_port_spin = QSpinBox()
+        self._rigctld_port_spin.setRange(1024, 65535)
+        self._rigctld_port_spin.setValue(rigctld_port)
+
+        self._rigctld_timeout_spin = QDoubleSpinBox()
+        self._rigctld_timeout_spin.setRange(0.05, 5.0)
+        self._rigctld_timeout_spin.setSingleStep(0.05)
+        self._rigctld_timeout_spin.setDecimals(2)
+        self._rigctld_timeout_spin.setSuffix(" s")
+        self._rigctld_timeout_spin.setValue(rigctld_timeout)
+
+        self._rigctld_delay_spin = QDoubleSpinBox()
+        self._rigctld_delay_spin.setRange(0.1, 10.0)
+        self._rigctld_delay_spin.setSingleStep(0.05)
+        self._rigctld_delay_spin.setDecimals(2)
+        self._rigctld_delay_spin.setSuffix(" s")
+        self._rigctld_delay_spin.setValue(rigctld_verify_delay)
+
+        rigctld_form.addRow("TCP Port:", self._rigctld_port_spin)
+        rigctld_form.addRow("Query timeout:", self._rigctld_timeout_spin)
+        rigctld_form.addRow("Verify delay:", self._rigctld_delay_spin)
+        cmd_layout.addWidget(self._rigctld_settings_box)
+
+        self._update_rig_backend_ui()
+        self._backend_group.idToggled.connect(lambda _id, checked: (
+            self._update_rig_backend_ui() if checked else None
+        ))
 
         cmd_note = QLabel(
-            "Port is the third port in Commander's configured port block "
-            "(documented default 52002).  Verify delay must cover at least "
-            "one Commander rig-poll cycle (~0.7 s minimum)."
+            "Only one backend talks to the rig at a time — pick the one "
+            "actually connected to it.  Verify delay must cover at least one "
+            "backend poll cycle (~0.7 s minimum).  Uncheck \"Track Band "
+            "filter\" if the backend reports a stale or incorrect VFO "
+            "frequency — it was overriding manual band selection."
         )
         cmd_note.setWordWrap(True)
         cmd_note.setStyleSheet("color: #999999; font-size: 10pt;")
@@ -460,7 +550,7 @@ class SettingsDialog(QDialog):
         tab_cmd_layout.addWidget(cmd_box)
         tab_cmd_layout.addWidget(cmd_note)
         tab_cmd_layout.addStretch()
-        tabs.addTab(tab_cmd, "Commander")
+        tabs.addTab(tab_cmd, "Communication")
 
         tab_cluster = QWidget()
         tab_cluster_layout = QVBoxLayout(tab_cluster)
@@ -485,6 +575,11 @@ class SettingsDialog(QDialog):
         adif_selected = self._rb_adif.isChecked()
         self._adif_row_widget.setVisible(adif_selected)
         self._rum_info.setVisible(not adif_selected)
+
+    def _update_rig_backend_ui(self) -> None:
+        commander_selected = self._rb_backend_commander.isChecked()
+        self._cmd_settings_box.setEnabled(commander_selected)
+        self._rigctld_settings_box.setEnabled(not commander_selected)
 
     def _browse_adif(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -582,9 +677,24 @@ class SettingsDialog(QDialog):
         return self._no_spot_spin.value()
 
     @property
-    def commander_enabled(self) -> bool:
-        """Whether Commander rig control is enabled."""
+    def wsjt_show_decodes(self) -> bool:
+        """Whether WSJT-X decodes should be shown in the table and terminal."""
+        return self._wsjt_show_cb.isChecked()
+
+    @property
+    def rig_control_enabled(self) -> bool:
+        """Whether rig control (double-click QSY) is enabled."""
         return self._cmd_enabled.isChecked()
+
+    @property
+    def rig_track_band(self) -> bool:
+        """Whether the Band filter should follow the active backend's reported VFO frequency."""
+        return self._cmd_track_band.isChecked()
+
+    @property
+    def rig_backend(self) -> str:
+        """Selected rig-control backend: ``'commander'`` or ``'rigctld'``."""
+        return 'rigctld' if self._rb_backend_rigctld.isChecked() else 'commander'
 
     @property
     def commander_port(self) -> int:
@@ -600,6 +710,21 @@ class SettingsDialog(QDialog):
     def commander_verify_delay(self) -> float:
         """Seconds to wait after a set command before reading back rig state."""
         return self._cmd_delay_spin.value()
+
+    @property
+    def rigctld_port(self) -> int:
+        """TCP port rigctld listens on."""
+        return self._rigctld_port_spin.value()
+
+    @property
+    def rigctld_timeout(self) -> float:
+        """Per-query TCP receive timeout in seconds."""
+        return self._rigctld_timeout_spin.value()
+
+    @property
+    def rigctld_verify_delay(self) -> float:
+        """Seconds to wait after a set command before reading back rig state."""
+        return self._rigctld_delay_spin.value()
 
     @property
     def telnet1_enabled(self) -> bool:

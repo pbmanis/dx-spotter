@@ -64,6 +64,13 @@ class AppConfig:
         Whether to start the WSJT-X UDP listener on launch.
     wsjt_port : int
         UDP port on which to listen for WSJT-X packets (default ``2237``).
+    wsjt_show_decodes : bool
+        Whether WSJT-X decodes are shown at all: added to the spot table and
+        (when ``-t``/``--terminal`` is active) printed to the terminal.  When
+        ``False``, the WSJT-X listener keeps running in the background (so the
+        decode-drought status indicator still works) but individual decodes
+        are dropped rather than displayed.  Lets WSJT-X output be silenced
+        independently of PSK Reporter and DX Cluster output.  Default ``True``.
     criterion : str
         The DXCC award criterion used to color the QSL column.  One of
         ``'5bd'``, ``'cw'``, ``'mixed'``, ``'digital'``, ``'ssb'``, ``'6m'``.
@@ -81,9 +88,21 @@ class AppConfig:
         same callsign from WSJT-X.  A callsign heard again within this window
         is silently dropped from the spot table (though its decode is still
         cached for Reply).  Default is ``300`` (5 minutes).
-    commander_enabled : bool
-        Whether to use DX Lab Commander for rig control when a CW or SSB spot
-        is double-clicked.  Set to ``True`` in ``config.toml`` to enable.
+    rig_control_enabled : bool
+        Whether to use rig control (QSY when a CW or SSB spot is
+        double-clicked, and the digital dial-frequency QSY before handing a
+        spot to WSJT-X).  Applies to whichever backend :attr:`rig_backend`
+        selects.  Set to ``True`` in ``config.toml`` to enable.
+    rig_track_band : bool
+        Whether the active backend's reported VFO frequency is allowed to
+        override the Band filter every poll cycle.  Independent of
+        :attr:`rig_control_enabled` so QSY can stay on while auto
+        band-tracking is turned off (e.g. when the backend is misreporting
+        the rig's frequency).  Default ``True``.
+    rig_backend : str
+        Which rig-control backend to use: ``'commander'`` (DX Lab Suite
+        Commander) or ``'rigctld'`` (Hamlib network rig control, e.g. via
+        K2K3Controller's CAT/PTT bridge).  Default ``'commander'``.
     commander_host : str
         Hostname or IP address of the Commander process.  Almost always
         ``'127.0.0.1'`` (same machine).
@@ -91,6 +110,25 @@ class AppConfig:
         TCP port Commander listens on.  Commander's documented default is
         ``52002`` (configured port block base + 2).  Some installations use a
         different port; check Commander's configuration.
+    commander_timeout : float
+        Per-query TCP receive timeout in seconds for Commander.  Default
+        ``0.2``.
+    commander_verify_delay : float
+        Seconds to wait after a Commander set command before reading back rig
+        state to verify it took effect.  Default ``0.75``.
+    rigctld_host : str
+        Hostname or IP address of the rigctld process.  Almost always
+        ``'127.0.0.1'`` (same machine).
+    rigctld_port : int
+        TCP port rigctld listens on.  Hamlib's standard default is ``4532``;
+        K2K3Controller's CAT/PTT bridge also defaults to ``4532`` and is
+        adjustable in its own settings.
+    rigctld_timeout : float
+        Per-query TCP receive timeout in seconds for rigctld.  Default
+        ``0.2``.
+    rigctld_verify_delay : float
+        Seconds to wait after a rigctld set command before reading back rig
+        state to verify it took effect.  Default ``0.75``.
     telnet1_enabled : bool
         Whether DX Cluster connection 1 is enabled on startup.
     telnet1_host : str
@@ -157,6 +195,7 @@ class AppConfig:
     max_spot_age: int = 30
     wsjt_enabled: bool = True
     wsjt_port: int = 2237
+    wsjt_show_decodes: bool = True
     criterion: str = 'mixed'
     display_filter: str = 'all'
     rx_grid_prefixes: list[str] = field(
@@ -164,11 +203,17 @@ class AppConfig:
     )
     wsjt_reshow_secs: int = 300
     wsjt_no_spot_mins: int = 2
-    commander_enabled: bool = False
+    rig_control_enabled: bool = False
+    rig_track_band: bool = True
+    rig_backend: str = 'commander'
     commander_host: str = '127.0.0.1'
     commander_port: int = 52002
     commander_timeout: float = 0.2
     commander_verify_delay: float = 0.75
+    rigctld_host: str = '127.0.0.1'
+    rigctld_port: int = 4532
+    rigctld_timeout: float = 0.2
+    rigctld_verify_delay: float = 0.75
     telnet1_enabled: bool = False
     telnet1_host: str = ''
     telnet1_port: int = 7300
@@ -255,6 +300,9 @@ def load_config() -> AppConfig:
     cfg.max_spot_age = int(filt.get('max_spot_age', cfg.max_spot_age))
     cfg.wsjt_enabled = bool(filt.get('wsjt_enabled', cfg.wsjt_enabled))
     cfg.wsjt_port = int(filt.get('wsjt_port', cfg.wsjt_port))
+    cfg.wsjt_show_decodes = bool(
+        filt.get('wsjt_show_decodes', cfg.wsjt_show_decodes)
+    )
     raw_prefixes = filt.get('rx_grid_prefixes', None)
     if isinstance(raw_prefixes, list):
         cfg.rx_grid_prefixes = [str(p).upper() for p in raw_prefixes]
@@ -266,11 +314,17 @@ def load_config() -> AppConfig:
     cfg.display_filter = str(ui.get('display_filter', cfg.display_filter))
 
     rig = data.get('rig', {})
-    cfg.commander_enabled = bool(rig.get('commander_enabled', cfg.commander_enabled))
+    cfg.rig_control_enabled = bool(rig.get('rig_control_enabled', cfg.rig_control_enabled))
+    cfg.rig_track_band = bool(rig.get('rig_track_band', cfg.rig_track_band))
+    cfg.rig_backend = str(rig.get('rig_backend', cfg.rig_backend))
     cfg.commander_host = str(rig.get('commander_host', cfg.commander_host))
     cfg.commander_port = int(rig.get('commander_port', cfg.commander_port))
     cfg.commander_timeout = float(rig.get('commander_timeout', cfg.commander_timeout))
     cfg.commander_verify_delay = float(rig.get('commander_verify_delay', cfg.commander_verify_delay))
+    cfg.rigctld_host = str(rig.get('rigctld_host', cfg.rigctld_host))
+    cfg.rigctld_port = int(rig.get('rigctld_port', cfg.rigctld_port))
+    cfg.rigctld_timeout = float(rig.get('rigctld_timeout', cfg.rigctld_timeout))
+    cfg.rigctld_verify_delay = float(rig.get('rigctld_verify_delay', cfg.rigctld_verify_delay))
 
     telnet = data.get('telnet', {})
     t1 = telnet.get('cluster1', {})
@@ -341,6 +395,7 @@ max_range     = {cfg.max_range}
 max_spot_age  = {cfg.max_spot_age}
 wsjt_enabled       = {"true" if cfg.wsjt_enabled else "false"}
 wsjt_port          = {cfg.wsjt_port}
+wsjt_show_decodes = {"true" if cfg.wsjt_show_decodes else "false"}
 rx_grid_prefixes   = [{", ".join(f'"{p}"' for p in cfg.rx_grid_prefixes)}]
 wsjt_reshow_secs   = {cfg.wsjt_reshow_secs}
 wsjt_no_spot_mins  = {cfg.wsjt_no_spot_mins}
@@ -350,11 +405,17 @@ criterion      = "{cfg.criterion}"
 display_filter = "{cfg.display_filter}"
 
 [rig]
-commander_enabled      = {"true" if cfg.commander_enabled else "false"}
+rig_control_enabled    = {"true" if cfg.rig_control_enabled else "false"}
+rig_track_band         = {"true" if cfg.rig_track_band else "false"}
+rig_backend            = "{cfg.rig_backend}"
 commander_host         = "{cfg.commander_host}"
 commander_port         = {cfg.commander_port}
 commander_timeout      = {cfg.commander_timeout}
 commander_verify_delay = {cfg.commander_verify_delay}
+rigctld_host           = "{cfg.rigctld_host}"
+rigctld_port           = {cfg.rigctld_port}
+rigctld_timeout        = {cfg.rigctld_timeout}
+rigctld_verify_delay   = {cfg.rigctld_verify_delay}
 
 [telnet]
 us_ca_spotters_only = {"true" if cfg.telnet_us_ca_spotters_only else "false"}
