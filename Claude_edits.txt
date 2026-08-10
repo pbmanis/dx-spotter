@@ -1,0 +1,1714 @@
+Claude Code Session Notes — PSKSpotter
+=======================================
+Date: 2026-06-15
+Model: claude-sonnet-4-6
+
+This file summarizes every change made to the pskspotter codebase during the
+Claude Code session that continued from the previous context window.
+
+─────────────────────────────────────────────────────────────────────────────
+FILES CHANGED
+─────────────────────────────────────────────────────────────────────────────
+  src/adif_log.py
+  src/wsjtx_listener.py
+  src/spot_window.py
+  src/main_window.py
+  src/pskspotter.py
+  src/icons/pskspot.png
+
+─────────────────────────────────────────────────────────────────────────────
+CHANGES BY FILE
+─────────────────────────────────────────────────────────────────────────────
+
+── src/adif_log.py ──────────────────────────────────────────────────────────
+
+1. Added _worked_dxcc: set[int]  to __init__  (companion to _confirmed_dxcc).
+   Populated in _load() with  self._worked_dxcc.add(dxcc)  for every QSO.
+
+2. New method  ever_worked(dxcc) -> bool
+   Returns True if the entity has ever been worked on ANY band/mode.
+   Used by the "New anywhere" spot filter.
+
+3. New method  ever_confirmed_on_band(dxcc, band) -> bool
+   Returns True if the entity has been confirmed on any mode of the given band.
+   Used by the "New on band" spot filter.
+
+── src/wsjtx_listener.py ────────────────────────────────────────────────────
+
+4. Added  self._wsjt_host: str | None = None  to __init__.
+   Set to the source host of the first UDP packet received (so we know where
+   to send outgoing messages back to WSJT-X).
+
+5. In _run(): capture  addr  from recvfrom and save addr[0] as _wsjt_host on
+   first packet.
+
+6. New static method  _encode_utf8(s)  — serializes a Python str to the
+   Qt big-endian UTF-8 wire format (uint32 length prefix, or 0xFFFFFFFF for
+   None/null).
+
+7. New method  _build_msg(msg_type, payload) -> bytes  — constructs a
+   complete WSJT-X outgoing UDP packet (magic 0xADBCCBDA, schema 2, type,
+   client-id "pskspotter", payload).
+
+8. New method  _send(data)  — sends a UDP datagram to (_wsjt_host, port).
+   No-ops if _wsjt_host is not yet known.
+
+9. New public method  switch_configuration(name)  — sends WSJT-X message
+   type 14 (Switch Configuration) asking WSJT-X to switch to a named saved
+   configuration. Requires "Accept UDP requests" enabled in WSJT-X and a
+   configuration pre-created with the given name.
+   NOTE: This method is implemented but not currently called; replaced by
+   the rigctld approach (see pskspotter.py change 21).
+
+── src/spot_window.py ───────────────────────────────────────────────────────
+
+10. Batch UI updates — eliminated per-spot resizeColumnsToContents() /
+    scrollToBottom() / setSortingEnabled() calls that caused UI sluggishness
+    under heavy spot load.
+
+    * New  self._pending_spots: list[dict] = []  queue.
+    * New  batch_timer (QTimer, 250 ms)  → _flush_pending().
+    * add_spot(spot)  now just appends to _pending_spots (returns immediately).
+    * New private  _insert_spot(spot)  contains the old insertion logic
+      (without the expensive per-call table operations).
+    * New  _flush_pending()  drains the queue 4× per second:
+        – Coalesces duplicate calls within one batch (keeps latest).
+        – Wraps all inserts in setUpdatesEnabled(False) to suppress repaints.
+        – Calls resizeColumnsToContents() and scrollToBottom() once per batch.
+    * clear() now also clears _pending_spots so Restart doesn't replay
+      queued spots.
+
+── src/main_window.py ───────────────────────────────────────────────────────
+
+11. Added  _SHOW_OPTS = ['All spots', 'New on band', 'New anywhere']  constant.
+
+12. _build_params(): Band default changed from 'All' → args.band or '10m'.
+    Mode default changed from 'FT8' → args.mode or 'FC'.
+    WSJT-X Enable default changed from False → True (getattr fallback True).
+
+13. _build_params(): Added "Show" list parameter to Filtering group with
+    limits=_SHOW_OPTS, default 'All spots'.
+
+14. _collect_settings(): Added  'spot_filter'  key returning the Show value.
+
+15. Added Reports panel (QGroupBox "Reports" with QFormLayout) between the
+    ParameterTree and the Restart/Quit buttons:
+        PSK Reporter:  <count>
+        WSJT-X:        <count>
+        Total:         <count>
+    Labels are QLabel widgets updated by update_counts().
+
+16. New public method  update_counts(psk_count, wsjt_count)  — updates the
+    three report labels. Called from a 250 ms QTimer in PSKSpotter.
+
+── src/pskspotter.py ────────────────────────────────────────────────────────
+
+17. Replaced  list_counter  with two separate counters:
+        self.psk_counter:  int = 0   (MQTT spots)
+        self.wsjt_counter: int = 0   (WSJT-X UDP spots)
+    Both reset to 0 in _restart().
+
+18. Counter increment positions moved to BEFORE the filter chain:
+    * on_message:      psk_counter += 1  immediately after successful JSON
+                       parse, before mode/country/range/show filters.
+    * _on_wsjt_spot:   wsjt_counter += 1  immediately after assert, before
+                       country/range/show filters.
+    This means counters reflect "received" (all decoded spots), not just
+    "displayed" (spots that survived all filters).
+    total = psk_counter + wsjt_counter is computed just before emit and used
+    for the table's # column and terminal output.
+
+19. _apply_settings() reworked:
+    a. Captures old_band / old_mode / old_range / old_show before applying.
+    b. After applying, if any of band/mode/range/show changed → clear table
+       and reset both counters (auto-reset on filter parameter changes).
+    c. WSJT-X listener restart logic changed: only do a full stop/rebind when
+       the UDP PORT changes.  For filter or call-sign changes, update
+       decode_filter and my_call in place on the running listener.
+       REASON: stopping and restarting on the same port caused a race where
+       the old socket held port 2237 for up to 1 s (its recv timeout),
+       making the new listener's bind() fail silently.  This was the root
+       cause of the "all" decode filter not working.
+
+20. Added  --show  argparse argument (default 'All spots',
+    choices=['All spots', 'New on band', 'New anywhere']).
+    _apply_settings maps settings['spot_filter'] → self.args.show.
+    Filter applied in both on_message and _on_wsjt_spot after dxcc lookup:
+        'New anywhere'  → skip if adif_log.ever_worked(dxcc)
+        'New on band'   → skip if adif_log.ever_confirmed_on_band(dxcc, band)
+
+21. Added  _qsy_rigctld(band)  method — sets the radio to the FT8/mode
+    frequency for the given band by connecting to rigctld at localhost:4532
+    and sending  \set_freq <hz>\n  (0.5 s timeout).
+    Mode resolution: FC/FCS → FT8, CS → CW, else exact match then FT8 fallback.
+    Called from _apply_settings when band changes to a non-None value.
+    NOTE: Requires rigctld to be running (hamlib daemon). DX Lab Suite
+    Commander was discussed as an alternative; implementation deferred pending
+    confirmation of Commander's TCP protocol format.
+
+22. argparse defaults updated:
+        --band   default None  →  '10m'
+        --mode   default 'FT8' →  'FC'
+        --range  default None  →  250  (km)
+        --wsjt   default False →  True
+
+23. Added  self._count_timer = QTimer()  in run(), started at 250 ms, that
+    calls  window.update_counts(psk_counter, wsjt_counter)  from the main
+    thread to update the Reports panel.
+
+24. Imported  socket  (used by _qsy_rigctld).
+    Imported  QTimer  from PyQt6.QtCore (used by _count_timer).
+
+── src/icons/pskspot.png ─────────────────────────────────────────────────────
+
+25. Applied macOS squircle (superellipse n=5) mask to the app icon.
+    * Rendered at 8× resolution (1024×1024 intermediate) then downsampled
+      with Lanczos for clean antialiasing.
+    * Saved as RGBA PNG (was RGB) so corners are transparent rather than white,
+      matching macOS Dock / Qt QIcon expectations.
+    * Used uv + Pillow (added as dev dependency) for the transformation;
+      no permanent dependency added to the main project.
+
+─────────────────────────────────────────────────────────────────────────────
+PENDING / DEFERRED
+─────────────────────────────────────────────────────────────────────────────
+
+A. DX Lab Suite Commander frequency control
+   The user's radio setup uses DX Suite Commander rather than rigctld.
+   Commander has a TCP control interface (typically port 52000) using a
+   length-prefixed text protocol, e.g.:
+       <command:12>CmdSetFreqHz<param:8>14074000
+   Implementation is deferred until the exact command format is confirmed
+   (check Commander → Help, or sniff with `sudo tcpdump -i lo0 -A port 52000`
+   while WSJT-X changes frequency, or look at WSJT-X source file
+   DXLabSuiteCommanderTransceiver.cpp).
+   When confirmed, replace the _qsy_rigctld() call in _apply_settings with
+   a _qsy_commander() method using the same socket pattern.
+
+B. WSJT-X "Accept UDP requests" / Switch Configuration
+   The switch_configuration() method in WsjtxListener is implemented but not
+   called. It remains available as a fallback if rigctld / Commander are not
+   in use. Requires WSJT-X → Preferences → Reporting → "Accept UDP requests"
+   to be enabled, and per-band configurations saved in WSJT-X with names
+   matching the band strings ("10m", "20m", etc.).
+
+─────────────────────────────────────────────────────────────────────────────
+ARCHITECTURE NOTES
+─────────────────────────────────────────────────────────────────────────────
+
+Thread model:
+  Main thread    — Qt event loop, all UI updates, QTimer callbacks
+  MQTT thread    — paho loop_start() background thread; calls on_message()
+                   which emits window.new_spot (queued cross-thread signal)
+  WSJT-X thread  — WsjtxListener._run() daemon thread; calls _on_wsjt_spot()
+                   which emits window.new_spot (queued cross-thread signal)
+  Counter safety — psk_counter / wsjt_counter are only incremented from their
+                   respective threads and read (not written) from the main
+                   thread timer; safe under CPython's GIL.
+
+Spot display pipeline:
+  on_message / _on_wsjt_spot
+    → increment source counter
+    → apply country / range / show filters
+    → compute adif_status
+    → window.new_spot.emit(spot_dict)   [cross-thread queued signal]
+    → SpotTable.add_spot()              [main thread, appends to _pending_spots]
+    → _flush_pending() every 250 ms    [main thread timer, batches table writes]
+
+
+═════════════════════════════════════════════════════════════════════════════
+Claude Code Session Notes — PSKSpotter  (continued)
+═════════════════════════════════════════════════════════════════════════════
+Date: 2026-06-18
+Model: claude-sonnet-4-6
+
+Three separate tasks were completed in this session.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 1 — Complete the award-criteria refactor
+─────────────────────────────────────────────────────────────────────────────
+
+Context: The previous session had replaced the old "Show" dropdown filter
+(All / New on band / New anywhere) with per-criterion award-status coloring
+(5BD / CW / Mixed / Digital / SSB).  The refactor was complete in adif_log.py,
+spot_window.py, and main_window.py, but the handler that was already wired in
+pskspotter.py was never defined.
+
+FILES CHANGED
+  src/pskspotter.py
+
+CHANGES
+
+1. New method  _on_criterion_changed(criterion)  in PSKSpotter.
+   Connected via  window.criterion_changed  signal (already wired at line 415).
+   Updates  self._criterion  then calls  window.restyle_spots(adif_log, criterion)
+   which propagates through  SpotTable.set_criterion() → _restyle_all()  to
+   re-color all visible rows for the new award criterion.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 2 — Bug fix: mode-incompatible spots incorrectly labeled "New [SSB]" etc.
+─────────────────────────────────────────────────────────────────────────────
+
+Bug: When "DXCC SSB" criterion is selected, FT8/CW/FT4 spots for a DXCC
+never worked on SSB were labeled "New [SSB]" (dark red).  The label is
+misleading because the spot is not on SSB and can't be used toward SSB DXCC.
+Same issue for "DXCC CW" (FT8 spots shown as "New [CW]") and "DXCC Digital"
+(SSB/CW spots shown as "New [Digital]").
+
+Root cause: award_status() was called for every spot regardless of whether the
+spot's mode is relevant to the selected criterion.
+
+FILES CHANGED
+  src/adif_log.py
+  src/spot_window.py
+
+CHANGES
+
+2. New static method  mode_matches_criterion(mode, criterion) -> bool
+   in ADIFLog (adif_log.py).
+   Returns False when the spot mode can't contribute to the criterion:
+     criterion='ssb'     → only SSB mode matches
+     criterion='cw'      → only CW mode matches
+     criterion='digital' → only modes in _DIGITAL_MODES match
+     criterion='mixed'   → any mode matches
+     criterion='5bd'     → any mode matches (band is the constraint)
+
+3. New status value  'n/a'  added to AWARD_COLORS in spot_window.py.
+   Color: same dark-grey background as 'confirmed' (#505050) but with
+   dimmer text (#808080) to distinguish it visually.
+
+4. _award_qsl_label() updated to handle 'n/a' → returns "— [SSB]" (or
+   appropriate criterion abbreviation) instead of "New [SSB]".
+
+5. _insert_spot() updated:
+   a. Extracts  mode = spot.get('md', '')  before the award query.
+   b. Calls  adif.mode_matches_criterion(mode, criterion)  first.
+      If False → status='n/a', conf_list=[], wkd_list=[].
+      If True  → proceeds with award_status() and criterion_qso_details().
+   c. Stores  'mode'  in the CALL_COL UserRole dict (was only dxcc + band)
+      so _restyle_all() can also perform the mode-compatibility check.
+
+6. _restyle_all() updated:
+   a. Reads  mode  from the stored CALL_COL UserRole dict.
+   b. Applies the same mode_matches_criterion() gate before calling
+      award_status() and criterion_qso_details().
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 3 — WSJT-X spot mode display + double-click to reply
+─────────────────────────────────────────────────────────────────────────────
+
+Two related features:
+  A. Show the actual mode (FT8/FT4/FT2) for WSJT-X spots instead of "~".
+  B. Double-clicking a digital-mode spot sends a WSJT-X Reply message that
+     selects the matching decode in the band activity window, sets the DX
+     call and audio RX frequency, and generates the standard message sequence.
+     Non-digital spots call a stub hook reserved for future K3/rig control.
+
+FILES CHANGED
+  src/wsjtx_listener.py
+  src/pskspotter.py
+  src/spot_window.py
+  src/main_window.py
+
+CHANGES
+
+── src/wsjtx_listener.py ────────────────────────────────────────────────────
+
+7. Mode "~" fix in _handle() / MSG_DECODE branch.
+   Old:  mode = r.utf8() or self._wsjt_mode
+   New:  raw_mode = r.utf8()
+         mode = raw_mode if raw_mode and raw_mode != '~' else self._wsjt_mode
+   WSJT-X emits "~" in the Decode packet when the mode is not included;
+   we now fall back to self._wsjt_mode (set from the preceding Status packet).
+
+8. SpotCallback type alias updated: added  msg: str  as the 8th positional
+   parameter.  Signature is now:
+     (dx_call, dx_grid, snr, df_hz, mode, band, unix_time, msg) -> None
+
+9. on_spot() call in _handle() updated to pass  msg  (the raw decoded
+   message text, e.g. "CQ N1ABC FM05kw").
+
+10. New public method  reply_to_decode(time_ms, snr, df, mode, message).
+    Sends WSJT-X UDP message type 4 (Reply).
+    Payload (big-endian):
+      int32   time_ms     — ms since UTC midnight (reconstructed from unix_time)
+      int32   snr
+      float64 delta_time  — always 0.0
+      uint32  df          — audio offset Hz
+      utf8    mode
+      utf8    message     — the original decoded message text
+      bool    low_confidence = False
+      uint8   modifiers = 0
+    Requires "Accept UDP requests" enabled in WSJT-X → Settings → Reporting.
+    WSJT-X will find the matching decode in its band activity window and
+    double-click it programmatically (sets DX call, RX freq, queues messages).
+    NOTE: works best for fresh WSJT-X-source spots still in the activity
+    window.  PSK Reporter spots use a reconstructed "CQ {call} {grid4}"
+    message which may not match any existing decode.
+
+── src/pskspotter.py ────────────────────────────────────────────────────────
+
+11. _on_wsjt_spot() accepts  msg: str = ''  as an 8th parameter.
+    'msg' is included in the spot dict emitted via window.new_spot.
+
+12. New class-level constant  _WSJT_DIGITAL = frozenset({'FT8', 'FT4', 'FT2'}).
+
+13. New method  _on_spot_activated(spot_data).
+    Connected to window.spot_activated (new signal, see below).
+    Logic:
+      • mode in _WSJT_DIGITAL  → call wsjt_listener.reply_to_decode()
+          – time_ms  from  int((unix_time % 86400) * 1000)
+          – snr      parsed from spot_data['rp'] (string "+12" → int 12)
+          – df       from spot_data['freq_offset']
+          – message  from spot_data['msg'] if present; otherwise
+                     reconstructed as "CQ {call} {grid4}"
+      • other modes → call _on_spot_activated_other() (stub hook)
+
+14. New stub  _on_spot_activated_other(_spot_data).
+    No-op placeholder for future Elecraft K3 / Commander rig control.
+    The underscore prefix on the parameter signals intentional non-use.
+
+15. window.spot_activated.connect(self._on_spot_activated)  added in run().
+
+── src/spot_window.py ───────────────────────────────────────────────────────
+
+16. Imported  pyqtSignal  from PyQt6.QtCore.
+
+17. New class-level signal  spot_activated = pyqtSignal(dict)  on SpotTable.
+
+18. itemDoubleClicked connected to  _on_double_click()  in __init__.
+
+19. _insert_spot() stores a spot-action dict in column 0's UserRole after
+    the main item loop:
+      { call, md, freq_offset, unix_time, rp, msg, loc, source }
+    This is separate from the CALL_COL UserRole (used for restyle/context menu)
+    and the SPOT_AGE_COL UserRole (used for age update).
+
+20. New private  _on_double_click(item).
+    Reads the spot-action dict from column 0's UserRole on the clicked row.
+    Emits  spot_activated  if the dict is present.
+
+── src/main_window.py ───────────────────────────────────────────────────────
+
+21. New signal  spot_activated = pyqtSignal(dict)  on MainWindow.
+    Wired:  self._spot_table.spot_activated.connect(self.spot_activated)
+    Forwards double-click events from the table up to PSKSpotter.
+
+─────────────────────────────────────────────────────────────────────────────
+PENDING / DEFERRED (updated)
+─────────────────────────────────────────────────────────────────────────────
+
+A. DX Lab Suite Commander frequency control (unchanged from previous session)
+   Replace _qsy_rigctld() with _qsy_commander() once the TCP protocol format
+   is confirmed.
+
+B. _on_spot_activated_other() stub (src/pskspotter.py line ~388)
+   Currently a no-op.  Future work: send frequency/mode commands to the
+   Elecraft K3 (or other rig) for CW/SSB/non-WSJT-X spots.
+
+C. WSJT-X Reply for PSK Reporter spots
+   For spots sourced from PSK Reporter (not WSJT-X), the 'msg' field is
+   empty and we reconstruct "CQ {call} {grid4}".  WSJT-X will find a match
+   only if it happens to have decoded that exact station.  A more reliable
+   approach (e.g. Highlight Callsign / type 13) could be added later.
+
+
+═════════════════════════════════════════════════════════════════════════════
+Claude Code Session Notes — PSKSpotter  (continued)
+═════════════════════════════════════════════════════════════════════════════
+Date: 2026-06-18 (second session)
+Model: claude-sonnet-4-6
+
+WSJT-X double-click reply debugging — root-cause investigation and fixes.
+Goal: double-clicking a WSJT-X spot in the PSKSpotter table should cause
+WSJT-X to set the DX call, highlight the decode in Band Activity, and arm
+the TX message sequence — identical to clicking the row in WSJT-X itself.
+
+─────────────────────────────────────────────────────────────────────────────
+BUGS FOUND AND FIXED
+─────────────────────────────────────────────────────────────────────────────
+
+BUG 1 — Sending Reply (type 4) to the wrong port
+─────────────────────────────────────────────────
+Root cause: WSJT-X sends UDP packets FROM an ephemeral source port (e.g.
+63326) TO the configured "UDP Server Port" (2237).  PSKSpotter was sending
+all outgoing commands TO port 2237 — i.e. back to our own recv_sock, which
+immediately swallowed them.  WSJT-X never saw any Reply at all.
+
+Discovery: tcpdump hex capture of a working packet from RumLogNG decoded to
+show source port 63326.  That ephemeral port is where WSJT-X's own receive
+socket lives; commands must go there.
+
+Fix (src/wsjtx_listener.py):
+  __init__: added  self._wsjt_src_port: int = 0
+  _run(): on first recvfrom(), capture addr[1] as _wsjt_src_port
+  _send(): destination changed to (self._wsjt_host, self._wsjt_src_port)
+
+BUG 2 — Port contention: no packets received (_wsjt_host remained None)
+─────────────────────────────────────────────────────────────────────────────
+Root cause: macOS uses BSD socket semantics.  With SO_REUSEADDR only,
+unicast datagrams go to the most recently bound socket on a port.  When
+RumLogNG or GridTracker2 bound port 2237 after PSKSpotter, PSKSpotter's
+recv_sock received nothing.
+
+Fix (src/wsjtx_listener.py _run()):
+  recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+  if hasattr(socket, 'SO_REUSEPORT'):
+      recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+
+  SO_REUSEPORT on BSD/macOS delivers a copy of each unicast datagram to
+  every socket bound to the same port, enabling coexistence with all
+  companion apps.  The hasattr() guard keeps it safe on non-macOS.
+
+BUG 3 — Stale decode fields in Reply (time_ms, delta_t, msg)
+─────────────────────────────────────────────────────────────
+Root cause: The _RESHOW_SECS = 300 display gate suppressed re-emitting
+spots to the table for 5 minutes.  The decode dict used for Reply was also
+only written inside the display-gate check, so stored time_ms / delta_t /
+msg could be 5 minutes old.  WSJT-X uses time_ms to locate the row in Band
+Activity (which rolls over each ~15 s decode period), so stale values caused
+lookup misses and Reply had no effect.
+
+Fix (src/wsjtx_listener.py _handle() Decode branch):
+  self._latest_decode: dict[str, dict] = {}  added in __init__
+  In the Decode branch, BEFORE the display-gate early-return, store:
+      self._latest_decode[dx_call] = {
+          'ms': ms, 'snr': snr, 'delta_t': delta_t,
+          'df': df, 'mode': mode, 'msg': msg,
+      }
+  New public method get_latest_decode(call) -> dict | None returns this.
+  _on_spot_activated() (pskspotter.py) calls get_latest_decode() first;
+  uses those exact fields if found, falls back to spot-row values otherwise.
+
+BUG 4 — .strip() on message text could corrupt Reply match
+────────────────────────────────────────────────────────────
+Root cause: Earlier code had  msg = r.utf8().strip().  WSJT-X uses the
+exact message string for band-activity lookup; stripping trailing spaces
+could break the match.
+
+Fix: msg = r.utf8()  — verbatim, no .strip()
+
+BUG 5 — Previous highlight not cleared when a new call is clicked
+─────────────────────────────────────────────────────────────────
+Root cause: highlight_call() only sent the new type-13 highlight; it never
+sent a clear for the previously highlighted call, so highlights accumulated.
+
+Fix (src/wsjtx_listener.py highlight_call()):
+  self._last_highlighted: str = ''  added in __init__
+  Before sending the new highlight, if _last_highlighted differs, send a
+  type-13 with invalid (clear) colors for the previous call, then update
+  _last_highlighted = callsign before sending the new highlight.
+
+BUG 6 — Qt QColor serialization format was wrong
+──────────────────────────────────────────────────
+User-supplied _pack_qcolor() had wrong field order (alpha after r/g/b) and
+1-byte pad instead of 2.  Correct QDataStream schema >= 7 format:
+  struct.pack('>bHHHHH', spec, alpha, r*257, g*257, b*257, pad)
+  spec=1 RGB / spec=0 invalid(clear), alpha=0xFFFF, pad=0.
+
+─────────────────────────────────────────────────────────────────────────────
+NEW ADDITIONS
+─────────────────────────────────────────────────────────────────────────────
+
+1. Comprehensive diagnostic logging in _handle() and outgoing methods:
+   All incoming types logged by name (_MSG_NAMES dict, types 0-15).
+   Status: only logged on dx_call / tx_en / txing change.
+   Reply echo (type 4 loopback): parsed and logged to confirm round-trip.
+   reply_to_decode() logs full fields + from:port → host:port + hex dump.
+   highlight_call() logs callsign being highlighted.
+   "No packets on port N" warning every 30 s while _wsjt_host is None.
+
+2. Heartbeat (type 0): sent on first packet, then every 15 s, to keep
+   PSKSpotter registered as an active WSJT-X UDP client.
+
+3. Highlight Callsign (type 13) confirmed working: clicking a WSJT-X spot
+   highlights the call with gold bg / black fg in WSJT-X Band Activity.
+   Each new click clears the previous highlight first.
+
+─────────────────────────────────────────────────────────────────────────────
+FILES CHANGED (this session)
+─────────────────────────────────────────────────────────────────────────────
+  src/wsjtx_listener.py  — all 6 bugs + new additions above
+  src/pskspotter.py      — _on_spot_activated() uses get_latest_decode(),
+                           diagnostic fallback prints
+
+─────────────────────────────────────────────────────────────────────────────
+PROTOCOL NOTES (for future reference)
+─────────────────────────────────────────────────────────────────────────────
+
+WSJT-X UDP port model:
+  WSJT-X sends FROM ephemeral port (e.g. 63326) TO configured port (2237).
+  Commands to WSJT-X must go TO the ephemeral port, not 2237.
+
+Reply (type 4) payload (big-endian):
+  quint32  time_ms        ms since UTC midnight
+  qint32   snr
+  double   delta_t        seconds
+  quint32  delta_freq_hz  audio offset
+  QString  mode           e.g. "FT8"
+  QString  message        exact decoded text e.g. "CQ N1ABC FM05kw"
+  bool     low_confidence = False
+  quint8   modifiers      = 0
+
+Highlight Callsign (type 13) payload:
+  QString  callsign
+  QColor   bg_color       11 bytes
+  QColor   fg_color       11 bytes
+  bool     last_only      = False
+
+QColor encoding (11 bytes, big-endian QDataStream schema >= 7):
+  qint8   spec    1=RGB, 0=invalid/clear
+  quint16 alpha   0xFFFF = opaque
+  quint16 r       component * 257
+  quint16 g       component * 257
+  quint16 b       component * 257
+  quint16 pad     0
+
+─────────────────────────────────────────────────────────────────────────────
+PENDING — Reply (type 4) action still not confirmed working (2026-06-18)
+─────────────────────────────────────────────────────────────────────────────
+Highlight (type 13) is confirmed working.  Reply (type 4) packet reaches
+WSJT-X's port (packet echoed back) but WSJT-X does not set DX call or arm
+TX.  Most likely remaining cause: the decode must exist in WSJT-X's current
+band-activity window.  Test by double-clicking a call decoded within the
+last ~15 s.  If terminal then shows "WSJT-X Status: dx_call='<call>'"
+within 1-2 s, the fix is working.  If still nothing, verify WSJT-X →
+Settings → Reporting → "Accept UDP requests" is enabled.
+
+
+═════════════════════════════════════════════════════════════════════════════
+Claude Code Session Notes — PSKSpotter  (continued)
+═════════════════════════════════════════════════════════════════════════════
+Date: 2026-06-18 (third session)
+Model: claude-sonnet-4-6
+
+Continuation of WSJT-X double-click debugging.  Six issues addressed.
+
+─────────────────────────────────────────────────────────────────────────────
+ISSUE 1 — Reply (type 4) payload corruption from erroneous target-ID prefix
+─────────────────────────────────────────────────────────────────────────────
+Root cause: a previous session added _encode_utf8(self._wsjt_client_id) as
+the first field in the Reply payload (10+ extra bytes: length-prefix +
+"WSJT-X" string).  This shifted every subsequent field so WSJT-X parsed
+time_ms as 6 (the length of "WSJT-X"), df as nonsense, etc.  Band-activity
+lookup found nothing.
+
+Proof: HighlightCallsign (type 13) works WITHOUT a target-ID prefix (starts
+directly with the callsign string).  This confirms WSJT-X does not expect a
+target-ID field in the payload of type-4 or type-13 messages.
+
+Fix (src/wsjtx_listener.py  reply_to_decode()):
+  Removed  _encode_utf8(self._wsjt_client_id)  from the start of the
+  payload.  Payload now starts directly with uint32 time_ms.
+
+─────────────────────────────────────────────────────────────────────────────
+ISSUE 2 — low_confidence never read from Decode packets
+─────────────────────────────────────────────────────────────────────────────
+Root cause: WSJT-X Reply (type 4) requires the low_confidence bool to match
+the original Decode exactly.  The Decode handler parsed up to 'msg' then
+stopped; low_conf was never read, never stored, and Reply always sent False.
+If any Decode had low_confidence=True, the field mismatch caused lookup
+failure in WSJT-X.
+
+Fix (src/wsjtx_listener.py  _handle() MSG_DECODE branch):
+  low_conf = r.bool_()   (added immediately after reading msg)
+  Stored in self._latest_decode[dx_call]['low_confidence'].
+  Passed to reply_to_decode() in _on_spot_activated() via
+    low_confidence = latest.get('low_confidence', False)
+
+─────────────────────────────────────────────────────────────────────────────
+ISSUE 3 — Configure (type 15) added as primary reply mechanism
+─────────────────────────────────────────────────────────────────────────────
+Context: Reply (type 4) works only when the matching decode is still in
+WSJT-X's current 15-second band-activity window.  Configure (type 15)
+directly sets DX Call + Rx DF + Generate Messages — identical to what the
+user does manually: type the callsign then click "Generate Std Msgs" —
+without needing a band-activity match.
+
+New method  configure(rx_df, dx_call, dx_grid='', generate_messages=True)
+(src/wsjtx_listener.py):
+  Payload (big-endian):
+    utf8    Mode         null = no change
+    uint32  FreqTol      0xFFFFFFFF = no change
+    utf8    Submode      null = no change
+    bool    FastMode     False
+    uint32  TRPeriod     0 = no change
+    uint32  RxDF         audio offset Hz
+    utf8    DXCall
+    utf8    DXGrid
+    bool    GenerateMessages
+
+Called from _on_spot_activated() (src/pskspotter.py) BEFORE reply_to_decode()
+so the DX call is set regardless of whether Reply finds a band-activity match.
+Configure also sends dx_grid to WSJT-X (fixes the DX Grid field in WSJT-X's
+main window).
+
+STATUS: CONFIRMED WORKING by user — "spots now finally are set in wsjtx".
+
+─────────────────────────────────────────────────────────────────────────────
+ISSUE 4 — CQ filter broken after switching from 'all' filter
+─────────────────────────────────────────────────────────────────────────────
+Root cause: _call_times dict (tracks when each call was last displayed to
+enforce the 5-minute _RESHOW_SECS gate) was never cleared when the decode
+filter changed in _apply_settings().  All recently-seen calls were gated,
+so no new CQ spots appeared for 5 minutes.  Also, non-CQ spots from the old
+'all' session remained visible in the table.
+
+Fix (src/pskspotter.py  _apply_settings()):
+  Capture old_filter before applying new settings.
+  If filter changed: call wsjt_listener.reset_call_times(), reset
+  wsjt_counter to 0, and call window.clear_table().
+
+New method  reset_call_times()  (src/wsjtx_listener.py):
+  self._call_times.clear()
+
+─────────────────────────────────────────────────────────────────────────────
+ISSUE 5 — DX grid empty / distance zero for WSJT-X spots
+─────────────────────────────────────────────────────────────────────────────
+Root cause: _on_wsjt_spot() contained a range filter:
+    if self.args.range is not None and dist_km > 0 and dist_km > self.args.range:
+        return
+Default --range is 250 km.  European DX at 7000+ km failed this check and
+was dropped.  Only no-grid spots (dist_km=0, bypassing the dist_km > 0
+guard) slipped through to the table.
+
+Fix (src/pskspotter.py  _on_wsjt_spot()):
+  Removed the range-filter block entirely for WSJT-X spots.
+  Rationale: WSJT-X spots are signals decoded directly; the station is
+  reachable by definition.  PSK Reporter range filter remains for MQTT spots.
+
+─────────────────────────────────────────────────────────────────────────────
+ISSUE 6 — Stale CQ callers remain in table after entering a QSO
+─────────────────────────────────────────────────────────────────────────────
+Context: With CQ filter, "CQ G4XYZ IO91" appears in the table.  When K1XYZ
+responds with "K1XYZ G4XYZ -05", G4XYZ is now in a QSO and should be
+removed from the table rather than waiting for the 5-minute expiry.
+
+New pipeline (thread-safe: listener thread → Qt signal → main thread):
+
+  BusyCallback = Callable[[str], None]  (type alias, wsjtx_listener.py)
+
+  WsjtxListener.__init__() gains  on_call_busy: BusyCallback | None = None
+  Both construction sites in pskspotter.py updated:
+    on_call_busy=self._on_call_busy
+
+  Decode handler addition (wsjtx_listener.py MSG_DECODE branch):
+    parts = msg.split()
+    if (self.decode_filter == 'CQ'
+            and self.on_call_busy is not None
+            and len(parts) >= 2
+            and parts[0] != 'CQ'
+            and _looks_like_call(parts[0])
+            and _looks_like_call(parts[1])):
+        self.on_call_busy(parts[1].upper())
+
+  SpotTable.remove_call(call) (src/spot_window.py):
+    Iterates rows in reverse; removes any row where DX Call column == call.
+
+  MainWindow.call_busy = pyqtSignal(str) (src/main_window.py):
+    Connected: self.call_busy.connect(self._spot_table.remove_call)
+
+  PSKSpotter._on_call_busy(call) (src/pskspotter.py):
+    if self.window is not None:
+        self.window.call_busy.emit(call)
+  Bridges the WsjtxListener daemon thread to the Qt main thread via the
+  queued signal.
+
+─────────────────────────────────────────────────────────────────────────────
+FILES CHANGED (this session)
+─────────────────────────────────────────────────────────────────────────────
+  src/wsjtx_listener.py  — Issues 1, 2, 3, 4, 6
+  src/pskspotter.py      — Issues 2, 3, 4, 5, 6
+  src/spot_window.py     — Issue 6 (remove_call)
+  src/main_window.py     — Issue 6 (call_busy signal + connection)
+
+─────────────────────────────────────────────────────────────────────────────
+PENDING / DEFERRED (updated)
+─────────────────────────────────────────────────────────────────────────────
+
+A. Reply (type 4) for band-activity row selection
+   Configure handles the primary use case (DX call + RX freq + generate
+   messages).  Reply is still sent after Configure as a bonus so WSJT-X can
+   highlight the matching decode row in Band Activity — not yet confirmed.
+
+B. Elecraft K3 rig control (_on_spot_activated_other stub)
+   Still a no-op placeholder for future rigctld integration.
+
+C. DX Lab Suite Commander frequency control (_qsy_rigctld)
+   Still deferred; TCP protocol format not yet confirmed.
+
+D. Spot table expiry
+   Spots accumulate until manually cleared or overwritten by a new spot for
+   the same call.  No automatic row expiry beyond _RESHOW_SECS display gate.
+
+
+═════════════════════════════════════════════════════════════════════════════
+Claude Code Session Notes — DXSpotter  (continued)
+═════════════════════════════════════════════════════════════════════════════
+Date: 2026-06-20
+Model: claude-sonnet-4-6
+
+Eight tasks completed in this session.  App renamed from PSKSpotter → DXSpotter
+in a prior session (src/pskspotter.py → src/dxspotter.py, icon renamed).
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 1 — Log info label (completed from previous context)
+─────────────────────────────────────────────────────────────────────────────
+Added a label at the top of the main window showing the log source and QSO
+counts.  This was subsequently moved to the status bar (Task 2).
+
+FILES CHANGED: src/adif_log.py, src/main_window.py, src/dxspotter.py
+
+1. ADIFLog.__init__() / from_rumlogng():
+   Added  self._total_qsos: int = 0.
+   Both _load() and _load_rumlogng() now increment _total_qsos per record.
+
+2. New properties on ADIFLog:
+   total_qsos            → int  (count of all QSOs loaded)
+   confirmed_dxcc_count  → int  (len of _confirmed_dxcc set)
+
+3. MainWindow.__init__(): wraps DockArea in a QVBoxLayout container widget
+   with a QLabel info bar above it (dark background, grey text).
+
+4. MainWindow.set_log_info(text) — public method to update the label.
+
+5. DXSpotter._log_info_text(cfg, log) — static helper that builds the label
+   string:  "Log: <source>  |  <N> QSOs  |  <M> DXCC confirmed"
+
+6. _log_info_text() called from run() (after window.show()) and from
+   _open_settings() after a log source / path change.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 2 — Status bar: log info + WSJT-X connection indicator
+─────────────────────────────────────────────────────────────────────────────
+Replaced the top-of-window QLabel bar with a proper QStatusBar at the bottom
+of the MainWindow, and added a WSJT-X connection status indicator.
+
+FILES CHANGED: src/main_window.py, src/wsjtx_listener.py, src/dxspotter.py
+
+7. MainWindow.__init__(): reverted to  setCentralWidget(area)  directly.
+   Two QLabel widgets added to the status bar:
+     self._sb_log  (left, stretches) — log source / QSO counts
+     self._sb_wsjt (right, fixed)    — WSJT-X connection status
+
+8. MainWindow.set_log_info(text)  — updates _sb_log.setText().
+
+9. MainWindow.set_wsjt_status(text, ok):
+   ok=True  → green text   "WSJT-X: connected"
+   ok=False → orange text  "WSJT-X: no signal (Xs)"
+   ok=None  → grey text    "WSJT-X: waiting…" / "WSJT-X: disabled"
+
+10. WsjtxListener: new HeartbeatCallback type alias (Callable[[], None]).
+    on_heartbeat parameter added to __init__; stored as self.on_heartbeat.
+    Fired in two places inside _run():
+      a. When _wsjt_host is set (first packet of any type received).
+      b. When an incoming Heartbeat (type 0) is parsed in _handle().
+    The type-0 case was previously falling through to the else/log branch;
+    now has its own  if mtype == 0:  handler before MSG_STATUS.
+
+11. DXSpotter.__init__(): added  self._last_wsjt_heartbeat: float = 0.0.
+
+12. DXSpotter._on_wsjt_heartbeat(): sets _last_wsjt_heartbeat = time.time().
+    Called from the WsjtxListener daemon thread; safe under CPython GIL.
+
+13. DXSpotter._update_wsjt_status():
+    Computes elapsed = time.time() - _last_wsjt_heartbeat.
+    < 45 s  → "WSJT-X: connected" (green)
+    ≥ 45 s  → "WSJT-X: no signal (Xs)" (orange)
+    == 0    → "WSJT-X: waiting…" (grey)
+    Called from the existing _tick() lambda in the 250 ms QTimer.
+
+14. on_heartbeat=self._on_wsjt_heartbeat passed to both WsjtxListener
+    instantiation sites (run() and _apply_settings()).
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 3 — Remove WSJT-X group from ParameterTree
+─────────────────────────────────────────────────────────────────────────────
+The WSJT-X Enable and UDP Port fields in the ParameterTree were redundant
+now that UDP address/port live in the Settings dialog.
+
+FILES CHANGED: src/main_window.py, src/dxspotter.py
+
+15. Removed  dict(name='WSJT-X', ...)  group from _build_params().
+
+16. Removed  'wsjt' and 'wsjt_port'  from _collect_settings() dict.
+
+17. _apply_settings(): want_wsjt and new_port now read from self._config
+    (cfg.wsjt_enabled / cfg.wsjt_port) instead of the settings dict.
+
+18. _save_config(): removed lines reading wsjt/wsjt_port from settings dict
+    (cfg.wsjt_enabled / cfg.wsjt_port are preserved as loaded / set via
+    Settings dialog).
+
+19. Removed unused  import socket  from dxspotter.py.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 4 — Remove Docker artifacts
+─────────────────────────────────────────────────────────────────────────────
+
+20. Deleted  Dockerfile  and  entrypoint.sh  from the project root.
+    No references to either found in pyproject.toml or README.md.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 5 — My Grid configurable via Settings dialog
+─────────────────────────────────────────────────────────────────────────────
+self.my_grid was hardcoded as "FM05kw" in DXSpotter.__init__().  It is now
+persisted in the config file and editable via the Settings dialog.
+
+FILES CHANGED: src/appconfig.py, src/settings_dialog.py, src/dxspotter.py
+
+21. AppConfig dataclass: added  my_grid: str = 'FM05kw'.
+    load_config(): reads  cfg.my_grid = filt.get('my_grid', cfg.my_grid)
+                   from [filters] section.
+    save_config(): writes  my_grid = "{cfg.my_grid}"  in [filters] section.
+
+22. SettingsDialog: new "Station" QGroupBox inserted between Log Source and
+    WSJT-X Network sections.  Contains a single "My Grid Square" QLineEdit
+    (max 6 chars, uppercased) initialized from the my_grid parameter.
+    New property  my_grid  returns text().strip().upper().
+
+23. DXSpotter.run(): cli.my_grid = cfg.my_grid; self.my_grid = cfg.my_grid.
+
+24. DXSpotter._open_settings(): passes my_grid=self.my_grid to SettingsDialog;
+    on Accept: self.my_grid = dlg.my_grid; cfg.my_grid = dlg.my_grid.
+
+25. DXSpotter._save_config(): cfg.my_grid = self.my_grid  (not from settings
+    dict, since My Grid is no longer in the ParameterTree).
+
+NOTE: My Grid was briefly added to the ParameterTree (Connection group) then
+immediately removed at user's request — it should only appear in Settings.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 6 — Fix RumLogNG confirmed QSO count (wrong field value)
+─────────────────────────────────────────────────────────────────────────────
+The confirmed count shown in the status bar was too low.
+
+Root cause: _load_rumlogng() checked  qsl == 'R'  for paper QSL confirmation.
+Querying the actual database revealed:
+  ZQSL:     'X' = confirmed (91 QSOs),  'R' = requested (88 QSOs),
+            'W' = waiting,  '-' = none
+  ZLOTWQSL: 'X' = confirmed (1428 QSOs), 'S' = sent, 'W' = waiting
+Both LoTW and paper QSL use 'X' to mean confirmed.  'R' means requested.
+
+FILES CHANGED: src/adif_log.py
+
+26. _load_rumlogng():
+    Old:  confirmed = (lotw == 'X') or (qsl == 'R')
+    New:  confirmed = (lotw == 'X') or (qsl == 'X')
+    Result: confirmed DXCC count corrected from ~6 to 191 entities.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 7 — Split confirmed DXCC into LoTW vs paper-only
+─────────────────────────────────────────────────────────────────────────────
+Status bar now shows the breakdown between LoTW-confirmed and paper-only.
+
+FILES CHANGED: src/adif_log.py, src/dxspotter.py
+
+27. ADIFLog: two new sets added in __init__() and from_rumlogng():
+      self._confirmed_lotw_dxcc:  set[int]  — entities with ≥1 LoTW-confirmed QSO
+      self._confirmed_paper_dxcc: set[int]  — entities with ≥1 paper-confirmed QSO
+
+28. New properties:
+      confirmed_lotw_dxcc_count        → len(_confirmed_lotw_dxcc)
+      confirmed_paper_only_dxcc_count  → len(_confirmed_paper_dxcc - _confirmed_lotw_dxcc)
+    "Paper only" = paper confirmed but NOT LoTW confirmed.
+
+29. _load_rumlogng(): split  confirmed  into  lotw_ok / paper_ok:
+      if lotw_ok:  _confirmed_lotw_dxcc.add(dxcc)
+      if paper_ok: _confirmed_paper_dxcc.add(dxcc)
+
+30. _load() (ADIF file loader): same split applied using standard ADIF fields:
+      lotw_ok  = LOTW_QSL_RCVD == 'Y'
+      paper_ok = QSL_RCVD == 'Y'
+
+31. DXSpotter._log_info_text(): updated to show breakdown:
+      "191 DXCC confirmed  (172 LoTW,  19 paper only)"
+    Verified against live RumLogNG database:
+      LoTW: 172,  paper-only: 19,  total: 191.
+
+─────────────────────────────────────────────────────────────────────────────
+FILES CHANGED (this session — complete list)
+─────────────────────────────────────────────────────────────────────────────
+  src/adif_log.py        — Tasks 1, 6, 7
+  src/main_window.py     — Tasks 1, 2, 3, 5
+  src/wsjtx_listener.py  — Task 2
+  src/dxspotter.py       — Tasks 1, 2, 3, 5, 7
+  src/appconfig.py       — Task 5
+  src/settings_dialog.py — Task 5
+  Dockerfile             — Deleted (Task 4)
+  entrypoint.sh          — Deleted (Task 4)
+
+─────────────────────────────────────────────────────────────────────────────
+PENDING / DEFERRED (updated)
+─────────────────────────────────────────────────────────────────────────────
+
+A. Reply (type 4) for band-activity row selection
+   Configure handles the primary use case.  Reply still sent after Configure
+   as a bonus for visual highlight of the matching decode row.
+
+B. Elecraft K3 rig control (_on_spot_activated_other stub)
+   Still a no-op placeholder.
+
+C. DX Lab Suite Commander frequency control (_qsy_rigctld)
+   Still deferred; TCP protocol format not yet confirmed.
+
+D. Spot table expiry
+   No automatic row expiry; spots accumulate until cleared.
+
+E. WSJT-X Enable toggle removed from UI
+   wsjt_enabled is stored in config and respected at startup but cannot be
+   toggled without editing config.toml or reopening the Settings dialog and
+   restarting.  Consider adding an Enable checkbox to the Settings dialog.
+
+
+─────────────────────────────────────────────────────────────────────────────
+BUG FIX — WSJT-X listener thread never started (same session, post-review)
+─────────────────────────────────────────────────────────────────────────────
+Symptom: Status bar showed "WSJT-X: waiting…" indefinitely; no spots ever
+received from WSJT-X despite the listener object being created.
+
+Root cause: During the Task 2 edit that added on_heartbeat and the status bar
+call, self.wsjt_listener.start() drifted from the  if self.args.wsjt:  block
+into the  else:  block.  The listener thread was therefore never launched when
+WSJT-X was enabled (and would have crashed with AttributeError on None when
+disabled, since wsjt_listener is not set in the else branch).
+
+The WsjtxListener object existed (so _update_wsjt_status did not return early),
+but its daemon thread was never running, so no UDP packets were ever read,
+_last_wsjt_heartbeat stayed 0.0, and the status label never advanced past
+"waiting".
+
+Fix (src/dxspotter.py  run()):
+  Moved  self.wsjt_listener.start()  back into the  if self.args.wsjt:  block,
+  immediately after the WsjtxListener constructor call and before the
+  set_wsjt_status("waiting") call.
+
+
+═════════════════════════════════════════════════════════════════════════════
+Claude Code Session Notes — DXSpotter  (continued)
+═════════════════════════════════════════════════════════════════════════════
+Date: 2026-06-30 / 2026-07-01
+Model: claude-sonnet-4-6
+
+Two tasks completed across a session that spanned context-window continuity.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 1 — Telnet DX Cluster integration (two connections)
+─────────────────────────────────────────────────────────────────────────────
+
+Added two configurable telnet DX cluster connections that feed spots through
+the same filter, award-coloring, and display pipeline as PSK Reporter and
+WSJT-X.  Each cluster has its own Reports panel row.
+
+NEW FILE: src/telnet_cluster.py
+───────────────────────────────
+
+Module provides  TelnetCluster(threading.Thread)  — a daemon thread that
+connects to a DX cluster node via TCP, logs in with the operator's callsign,
+and forwards parsed spot lines to a callback.
+
+Two spot line formats recognized:
+
+  Standard (AR-Cluster / DXSpider):
+    DX de <spotter>:    <freq_kHz>  <dx_call>    <comment>
+    e.g.  DX de K4HWS:     14040.0  VA7MM        CW      VE 0236Z
+
+  Alternate (used by some nodes):
+    <freq_kHz>  <dx_call>   <DD-Mon-YYYY>  <HHMMZ>   <comment>  <<spotter>>
+    e.g.  14292.0  EA3KT       01-Jul-2026 0221Z      EA <N5VBP>
+
+  _process_line() tries the standard regex first; falls back to the alternate
+  regex.  Lines matching neither format are silently skipped.
+
+SNR: extracted from comment if present (e.g. "-10 dB"); defaults to '0'.
+Mode: keyword extracted from comment first (FT8, FT4, FT2, CW, SSB, …),
+      then inferred from frequency using:
+        _FT_FREQS — FT8/FT4/FT2 channel centres (±1 kHz tolerance)
+        _CW_SEGMENTS — IARU Region 2 CW sub-band segments
+        _SSB_SEGMENTS — IARU Region 2 SSB sub-band segments
+      Unrecognized frequencies fall back to 'CW'.
+
+Reconnection: exponential back-off (5 s → 10 → 20 → 40 → 60 s max).
+
+stop() method: sets a threading.Event AND calls sock.shutdown(SHUT_RDWR) to
+unblock a recv() immediately, so the thread exits without waiting for the
+120-second socket timeout.  Socket reference cleared in _connect_and_run
+with try/finally.
+
+Keepalive: on socket.timeout (120 s) a bare '\r\n' is sent to detect stale
+connections before the reconnect cycle.
+
+Telnet IAC option negotiation bytes are stripped via _strip_iac() before
+line splitting (some nodes send IAC negotiation on connect).
+
+SpotCallback = Callable[[dict], None] — type alias for the on_spot parameter.
+Spot dict keys: call, rc, rl, abs_freq_hz, rp, md, unix_time, comment.
+
+FILES CHANGED: src/appconfig.py
+────────────────────────────────
+
+New AppConfig fields:
+  telnet1_enabled: bool = False
+  telnet1_host:    str  = ''
+  telnet1_port:    int  = 7300
+  telnet1_callsign:str  = ''
+  telnet2_enabled: bool = False
+  telnet2_host:    str  = ''
+  telnet2_port:    int  = 7300
+  telnet2_callsign:str  = ''
+
+load_config():  reads [telnet.cluster1] and [telnet.cluster2] TOML sub-tables.
+save_config():  writes those same sub-tables.
+
+FILES CHANGED: src/settings_dialog.py
+──────────────────────────────────────
+
+New "DX Cluster (Telnet)" QGroupBox appended to the dialog, containing two
+sub-groups ("Cluster 1" / "Cluster 2"), each with:
+  QCheckBox("Enable")
+  QLineEdit for host
+  QSpinBox  for port  (range 1–65535, default 7300)
+  QLineEdit for callsign
+
+Eight new @property decorators expose the values back to the caller:
+  telnet1_enabled, telnet1_host, telnet1_port, telnet1_callsign (× 2).
+
+FILES CHANGED: src/spot_window.py
+──────────────────────────────────
+
+spots_expired signal extended from (int, int) to (int, int, int, int):
+  (psk_removed, wsjt_removed, telnet1_removed, telnet2_removed)
+
+_update_ages() now increments four separate removal counters keyed by the
+'source' field ('psk', 'wsjt', 'telnet1', 'telnet2').
+
+FILES CHANGED: src/main_window.py
+──────────────────────────────────
+
+Reports panel extended from 3 rows to 5:
+  PSK Reporter: <N>
+  WSJT-X:       <N>
+  Telnet 1:     <N>
+  Telnet 2:     <N>
+  Total:        <N>
+
+update_counts() signature extended:
+  update_counts(psk, wsjt, telnet1=0, telnet2=0)
+
+FILES CHANGED: src/dxspotter.py
+────────────────────────────────
+
+  import from telnet_cluster: TelnetCluster
+
+  New instance vars:
+    self.telnet1_counter: int = 0
+    self.telnet2_counter: int = 0
+    self._telnet1: TelnetCluster | None = None
+    self._telnet2: TelnetCluster | None = None
+
+  New class-level constant _MODE_FILTER (maps mode-filter string to frozenset
+  of accepted mode strings):
+    'FT8' → {'FT8'}, 'FT4' → {'FT4'}, 'FT2' → {'FT2'}
+    'CW'  → {'CW'},  'SSB' → {'SSB'}
+    'FT'  → {'FT4', 'FT8', 'FT2'}
+    'FC'  → {'CW', 'FT4', 'FT8', 'FT2'}
+    'FCS' → {'CW', 'FT4', 'FT8', 'FT2', 'SSB'}
+    'CS'  → {'CW', 'SSB'}
+
+  New method _on_telnet_spot(raw, index):
+    Applies mode/band filter, looks up DXCC/country, computes freq_offset,
+    increments telnet1_counter or telnet2_counter, emits to window.new_spot
+    with source='telnet1' or 'telnet2'.
+
+  _on_spots_expired() expanded to handle all four counters.
+
+  _tick() passes all four counters to window.update_counts().
+
+  Cluster startup in run():
+    if cfg.telnet1_enabled and cfg.telnet1_host and cfg.telnet1_callsign:
+        self._telnet1 = TelnetCluster(host, port, callsign, on_spot, index=1)
+        self._telnet1.start()
+    (Same pattern for _telnet2.)
+
+  _save_and_cleanup(): calls .stop() on both clusters if started.
+
+  _open_settings(): passes all telnet params to dialog; restarts clusters if
+  any telnet settings changed.
+
+─────────────────────────────────────────────────────────────────────────────
+BUGS FOUND AND FIXED DURING TASK 1
+─────────────────────────────────────────────────────────────────────────────
+
+BUG A — Alternate spot format not parsed
+  Symptom: no spots received from a node using the alternate format.
+  Root cause: _process_line() only tried _SPOT_RE (standard format starting
+  with "DX de"); the alternate format (bare frequency first, spotter in <>)
+  did not match.
+  Fix: added _SPOT_RE_ALT, updated _process_line() to try standard first then
+  fall back to alternate.
+
+BUG B — Thread hangs on quit (recv blocked 120 s)
+  Symptom: app took ~120 s to fully quit when telnet was active.
+  Root cause: stop() only set _stop_event; the thread was blocking on
+  sock.recv() with a 120 s timeout and would not notice the event flag.
+  Fix: stored active socket as self._sock; stop() now calls
+  sock.shutdown(SHUT_RDWR) to immediately raise OSError in recv().
+  Socket reference cleared in _connect_and_run with try/finally.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 2 — Fix: FT8/FT4/FT2 spot double-click should QSY the radio
+─────────────────────────────────────────────────────────────────────────────
+
+Bug: After double-clicking a CW spot (which QSYs the radio to the CW
+frequency via Commander), double-clicking a subsequent FT8 spot correctly
+loads the call/frequency into WSJT-X via Configure+Reply, but does NOT move
+the radio back to the FT8 dial frequency.  The rig stays on the previous CW
+frequency.
+
+Root cause: _send_to_wsjt() only sent WSJT-X Configure and Reply packets; it
+never called Commander.  _activate_rig_spot() (the CW/SSB path) called
+Commander, but the digital path had no equivalent.
+
+Fix (src/dxspotter.py  _send_to_wsjt()):
+  Before the highlight_call() / configure() / reply_to_decode() calls, check
+  if self._config.commander_enabled.  If True, call self.get_base_freq(band,
+  mode) to look up the standard dial frequency in Hz.  If non-zero, fire a
+  daemon thread that:
+    1. Checks commander_available(host, port).
+    2. Calls client.set_freq_and_mode(dial_khz, 'USB', verify_delay=...).
+
+  Mode string 'USB' is used because FT8/FT4/FT2 all operate in the USB
+  passband.  The Commander call is parallel to the WSJT-X packets (daemon
+  thread), so the verify_delay (~0.75 s) does not block the Qt main thread.
+
+  band is taken from spot_data['b'].
+  mode is the resolved mode string (from WSJT-X decode cache or spot row).
+
+FILES CHANGED: src/dxspotter.py
+
+─────────────────────────────────────────────────────────────────────────────
+FILES CHANGED (this session — complete list)
+─────────────────────────────────────────────────────────────────────────────
+  src/telnet_cluster.py   — NEW FILE (Task 1)
+  src/appconfig.py        — Task 1 (telnet config fields)
+  src/settings_dialog.py  — Task 1 (telnet UI)
+  src/spot_window.py      — Task 1 (4-way spots_expired signal)
+  src/main_window.py      — Task 1 (Telnet 1/2 report rows)
+  src/dxspotter.py        — Task 1 (cluster integration), Task 2 (QSY fix)
+
+─────────────────────────────────────────────────────────────────────────────
+PENDING / DEFERRED (updated)
+─────────────────────────────────────────────────────────────────────────────
+
+A. Reply (type 4) for band-activity row selection
+   Configure handles the primary use case.  Reply is still sent as a bonus.
+
+B. QSY mode string for digital modes
+   'USB' is sent to Commander for all FT8/FT4/FT2 spots.  Some transceivers
+   require 'DATA-USB' or 'DIGU'.  Can be made configurable if needed.
+
+C. Telnet spot display filter
+   Telnet spots currently bypass the "only show stations actually heard
+   transmitting" filter (which applies to WSJT-X spots only).  This is
+   intentional — DX cluster spots are cluster-reported, not locally decoded.
+
+
+═════════════════════════════════════════════════════════════════════════════
+Claude Code Session Notes — DXSpotter  (continued)
+═════════════════════════════════════════════════════════════════════════════
+Date: 2026-07-01
+Model: claude-sonnet-4-6
+
+One task: MQTT code extracted into its own module.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK — Refactor PSK Reporter MQTT into src/mqtt_listener.py
+─────────────────────────────────────────────────────────────────────────────
+
+Motivation: dxspotter.py contained the raw paho-mqtt client wiring (connect,
+disconnect, on_message) mixed in with the Qt controller.  Pattern is now
+consistent with wsjtx_listener.py and telnet_cluster.py — each source owns
+its own connection, parses its own wire format, and calls back via a single
+SpotCallback.
+
+NEW FILE: src/mqtt_listener.py
+───────────────────────────────
+
+Class  MqttListener  wraps a paho.mqtt.client.Client.
+
+Constructor:
+  host : str         — MQTT broker hostname
+  port : int         — MQTT broker TCP port
+  topic : str        — initial subscription topic
+  on_spot : SpotCallback  — Callable[[dict], None]; receives the raw parsed
+                            JSON payload dict on every incoming message
+
+Public API:
+  .start()                — connect() + loop_start(); returns immediately
+  .stop()                 — loop_stop() + disconnect()
+  .resubscribe(new_topic) — unsubscribes old, stores new, subscribes new;
+                            safe to call with the same topic (forces resub)
+  .connected : bool       — property; True while broker ack is in effect
+  .topic : str            — property; current subscription topic string
+
+Internal paho callbacks (all private, network thread):
+  _handle_connect()    — sets self._connected = True, calls client.subscribe
+  _handle_disconnect() — sets self._connected = False
+  _handle_message()    — json.loads(msg.payload) → calls self._on_spot(payload)
+                         on JSONDecodeError, prints and returns
+
+SpotCallback = Callable[[dict], None]  (module-level type alias)
+
+json and paho imports are fully contained in this module; dxspotter.py no
+longer imports either.
+
+FILES CHANGED: src/dxspotter.py
+────────────────────────────────
+
+Imports:
+  Removed:  import json
+  Removed:  import paho.mqtt.client as mqtt
+  Added:    from mqtt_listener import MqttListener
+
+Instance variables (in __init__):
+  Removed:  self._mqtt_client: mqtt.Client | None = None
+  Removed:  self._mqtt_connected: bool = False
+  Added:    self._mqtt_listener: MqttListener | None = None
+
+Methods removed (logic moved into MqttListener or _on_psk_spot):
+  on_connect(client, userdata, flags, rc, properties)
+  on_disconnect(client, userdata, flags, rc, properties)
+  on_message(client, userdata, msg)
+
+Method added:
+  _on_psk_spot(self, payload: dict) -> None
+    Contains the former on_message body (minus the json.loads wrapper and
+    JSONDecodeError catch, which are now in MqttListener._handle_message).
+    Applies mode / range / rx_grid_prefixes filters, calls get_country_text /
+    get_dxcc / get_freq_offset, and emits the enriched spot dict to
+    window.new_spot.  Called from the paho network thread — uses a queued
+    Qt signal so no direct widget access occurs off-thread.
+
+_update_pskr_status():
+  Old: reads self._mqtt_connected (bool on DXSpotter)
+  New: reads self._mqtt_listener.connected if self._mqtt_listener else False
+
+_apply_settings() — MQTT resubscription block:
+  Old: self._mqtt_client.unsubscribe(old) / self._mqtt_client.subscribe(new)
+  New: self._mqtt_listener.resubscribe(new_topic)
+
+_restart():
+  Old: self._mqtt_client.unsubscribe(topic) / .subscribe(topic)
+  New: self._mqtt_listener.resubscribe(self.topic)
+
+run() — MQTT startup:
+  Old: mqtt.Client(...) + on_connect/disconnect/message wiring + connect() +
+       loop_start() (8 lines)
+  New: MqttListener(host, port, topic, on_spot=self._on_psk_spot).start()
+       (3 lines)
+
+_save_and_cleanup():
+  Old: self._mqtt_client.loop_stop() / .disconnect()
+  New: self._mqtt_listener.stop()
+
+─────────────────────────────────────────────────────────────────────────────
+FILES CHANGED (this session — complete list)
+─────────────────────────────────────────────────────────────────────────────
+  src/mqtt_listener.py  — NEW FILE
+  src/dxspotter.py      — imports, instance vars, methods as above
+
+
+═════════════════════════════════════════════════════════════════════════════
+Claude Code Session Notes — DXSpotter  (continued)
+═════════════════════════════════════════════════════════════════════════════
+Date: 2026-07-02
+Model: claude-sonnet-4-6
+
+Three tasks: two code fixes and a complete documentation overhaul.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 1 — Dock icon oversized when app runs as .app bundle
+─────────────────────────────────────────────────────────────────────────────
+
+Symptom: App icon correct at rest in Dock, too large after launch.
+Root cause: app.setWindowIcon(make_app_icon()) overrides the bundle's ICNS
+with a PyQt6-generated NSImage at the wrong DPI/scale.  In a .app bundle
+(sys.frozen = True) the ICNS embedded by PyInstaller already provides the
+correct icon at all sizes; overriding it is both unnecessary and harmful.
+
+Fix (src/dxspotter.py):
+  Wrapped setWindowIcon() call:
+    if not getattr(sys, "frozen", False):
+        app.setWindowIcon(make_app_icon())
+  No change in source-tree (non-bundle) runs; .app bundles use the ICNS.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 2 — FT8 spot double-click: call populated in WSJT-X but radio not QSYed
+─────────────────────────────────────────────────────────────────────────────
+
+Symptom: Double-clicking a PSK Reporter FT8 spot in the band map set the DX
+call in WSJT-X correctly but did not move the radio.
+
+Root cause: _send_to_wsjt() fired a daemon thread (_qsy_digital) that called
+CommanderClient.set_freq_and_mode(dial_khz, 'DATA-USB', ...).  'DATA-USB' is
+not in CommanderClient.VALID_MODES (the correct mode string is 'DATA-U').
+This raised a ValueError inside the thread, which silently terminated the
+thread with no user-visible error and no Commander command sent.
+
+Fixes (src/dxspotter.py  _send_to_wsjt()):
+  1. Changed 'DATA-USB' → 'DATA-U' (matches Commander's ADIF mode name).
+  2. Wrapped the entire _qsy_digital() thread body in try/except Exception
+     so any future exceptions print to the terminal instead of disappearing.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 3 — Documentation overhaul for v0.2.0
+─────────────────────────────────────────────────────────────────────────────
+
+Updated all documentation to cover the new components and features added
+since the initial v0.1.0 docs.  Also fixed Sphinx build warnings, reorganized
+page layout, and switched to a persistent dark theme.
+
+── docs/conf.py ─────────────────────────────────────────────────────────────
+
+  Theme history:
+    v0.1.x: furo (dark mode via OS preference)
+    Interim: sphinx_rtd_theme (left-only nav, light theme — not preferred)
+    v0.2.0: furo restored; dark mode forced via _templates/base.html override
+            (furo 2025.12.19 removed the 'default_mode' html_theme_options key)
+
+  Current settings:
+    html_theme = "furo"
+    html_theme_options = {}   (all defaults; mode forced in template)
+
+  napoleon_custom_sections not added: 'Signals' section in class docstrings
+  is left as plain RST text (Napoleon does not process it as ivar entries).
+  The #: comment pattern is used instead (see band_map.py below).
+
+── docs/_templates/base.html  (NEW FILE) ────────────────────────────────────
+
+  Furo's base.html initialises the theme via an inline <script> in
+  {% block body %}:
+    document.body.dataset.theme = localStorage.getItem("theme") || "auto";
+  This block is overridden here to change the default from "auto" to "dark":
+    document.body.dataset.theme = localStorage.getItem("theme") || "dark";
+  A visitor who switches to light mode via the toggle keeps their stored
+  preference (localStorage["theme"] = "light").
+
+── build_docs.sh ────────────────────────────────────────────────────────────
+
+  bash 3.2 (macOS default) with 'set -u' treats an empty array's [@] expansion
+  as an unbound variable.  Fixed two lines:
+    Old: uv run sphinx-build ... ${SPHINX_EXTRA[@]} ...
+    New: uv run sphinx-build ... ${SPHINX_EXTRA[@]+"${SPHINX_EXTRA[@]}"} ...
+  The conditional expansion is a standard bash 3.x compatibility idiom.
+
+── dx-spotter.spec ──────────────────────────────────────────────────────────
+
+  CFBundleShortVersionString bumped: '0.1.0' → '0.2.0'
+
+── docs/index.rst ───────────────────────────────────────────────────────────
+
+  Both toctrees now carry :hidden: so the navigation lists do not repeat in
+  the page body (sidebar shows them via Furo's left-nav mechanism).
+
+  Third toctree added (caption: "Reference", :hidden:) for source_layout.
+  This puts "Source Layout" in the left nav below API Reference.
+
+  "Source layout" section removed from this file and moved to source_layout.rst.
+
+  Image added before Overview:
+    .. image:: _images/dx_spotter_main_window.png
+       :width: 100%
+       :alt: DX Spotter main window
+
+  Pre-existing stray leading space in Overview paragraph corrected
+  (" filters include" → "filters include").
+
+  User-edited additions since last write: Navigation section added (describes
+  pyqtgraph ParameterTree and docking system); Quick start section expanded
+  with git-clone install path.
+
+── docs/source_layout.rst  (NEW FILE) ───────────────────────────────────────
+
+  Contains the source-file table previously embedded in index.rst.
+  Updated to include band_map.py, commander_client.py, mqtt_listener.py,
+  telnet_cluster.py.  Entries sorted alphabetically.
+
+── docs/usage.rst ───────────────────────────────────────────────────────────
+
+  Python requirement updated: 3.11 → 3.13.
+  Status bar: documented T1/T2 telnet fields and 3-colour WSJT-X indicator.
+  Double-click description: covers WSJT-X Configure+Reply and Commander QSY.
+  New sections: "DX Lab Commander rig control", "Band map" (zoom buttons,
+  double-click), "Double-clicking in the band map".
+  Removed all Hamlib/rigctld references.
+
+── docs/configuration.rst ───────────────────────────────────────────────────
+
+  Completely rewritten with new section order:
+    1. Intro sentence + settings dialog image
+    2. Settings dialog section-by-section description
+       (Log Source, Station, WSJT-X Network, Rig Control, DX Cluster T1/T2)
+    3. File location table
+    4. TOML key reference (all keys documented)
+    5. Example config.toml
+
+  New keys documented: wsjt_no_spot_mins ([filters]); all [rig] keys
+  (commander_enabled, commander_host, commander_port, commander_timeout,
+  commander_verify_delay); [telnet.cluster1] / [telnet.cluster2] keys.
+
+  Restart note updated: only UDP address/port changes require restart; all
+  other settings dialog changes take effect immediately.
+
+── docs/display.rst ─────────────────────────────────────────────────────────
+
+  Src column: added t1 / t2 sources.
+  New section: "Band map display".
+
+── New API stub files ────────────────────────────────────────────────────────
+
+  docs/api/band_map.rst
+  docs/api/commander_client.rst
+  docs/api/mqtt_listener.rst
+  docs/api/telnet_cluster.rst
+
+  All four follow the same automodule pattern as existing api/*.rst files.
+
+── Sphinx build warning fixes ───────────────────────────────────────────────
+
+  1. src/commander_client.py module docstring (line 5):
+     "Unexpected indentation" caused by 2-space-indented URL after
+     "protocol documented at:".
+     Fix: reformatted as an RST external hyperlink:
+       `Commander TCP/IP Messages <http://...>`_.
+
+  2. src/band_map.py  spot_activated attribute:
+     "Inline emphasis start-string without end-string" caused by Sphinx
+     falling back to PyQt6's internal pyqtSignal docstring (which contains
+     *args in its signature — an unmatched RST emphasis marker).
+     Fix: added #: doc comments immediately above the attribute assignment:
+       #: Emitted on double-click near a spot.  Payload matches the
+       #: ``_SPOT_ROLE`` format used by :class:`~spot_window.SpotTable`.
+       spot_activated = pyqtSignal(dict)
+     Sphinx now uses the #: comment as the attribute docstring instead of
+     interrogating the pyqtSignal descriptor.
+
+─────────────────────────────────────────────────────────────────────────────
+FILES CHANGED (this session — complete list)
+─────────────────────────────────────────────────────────────────────────────
+  src/dxspotter.py            — Tasks 1 and 2 (icon guard, DATA-U fix)
+  src/commander_client.py     — Task 3 (URL docstring fix)
+  src/band_map.py             — Task 3 (#: doc comment for spot_activated)
+  dx-spotter.spec             — Task 3 (version bump 0.1.0 → 0.2.0)
+  build_docs.sh               — Task 3 (bash 3.2 empty-array fix)
+  docs/conf.py                — Task 3 (theme: sphinx_rtd_theme → furo)
+  docs/_templates/base.html   — NEW (Task 3: forces dark mode default)
+  docs/index.rst              — Task 3 (hidden toctrees, image, new toctree)
+  docs/source_layout.rst      — NEW (Task 3: extracted from index.rst)
+  docs/usage.rst              — Task 3 (v0.2.0 content)
+  docs/configuration.rst      — Task 3 (rewritten)
+  docs/display.rst            — Task 3 (t1/t2, band map section)
+  docs/api/band_map.rst       — NEW (Task 3)
+  docs/api/commander_client.rst — NEW (Task 3)
+  docs/api/mqtt_listener.rst  — NEW (Task 3)
+  docs/api/telnet_cluster.rst — NEW (Task 3)
+
+═════════════════════════════════════════════════════════════════════════════
+Claude Code Session Notes — DXSpotter  (continued)
+═════════════════════════════════════════════════════════════════════════════
+Date: 2026-08-10
+Model: claude-sonnet-5
+
+Three tasks, all related: the Band filter was getting forcibly reset to 6m
+every ~250 ms, traced back to stale/incorrect VFO data from DX Lab Commander,
+and root-caused to the station no longer using Commander for rig control at
+all (K2K3Controller + rigctld now owns that job). Ended with a full second
+rig-control backend (rigctld) alongside Commander, selectable in Settings.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 1 — Diagnose "band filter stuck on 6m"
+─────────────────────────────────────────────────────────────────────────────
+
+Symptom: any manual Band change in the parameter tree reverted to 6m (and
+the WAS radio button label followed it back to "WAS (6m)") within a
+quarter second.
+
+Root cause: src/dxspotter.py  _update_commander_band()  (called from the
+250 ms Qt timer) polls Commander's CmdGetFreq every cycle and force-writes
+the Band parameter whenever the reported frequency maps to a different band
+than the current filter — with no notion of "the user just picked this on
+purpose." commander_enabled was true in the saved config
+(~/Library/Application Support/DXSpotter/config.toml) and Commander was
+returning a stable 50314.6 kHz on every poll.
+
+Diagnostic added: a print (gated on the existing -t/--terminal flag) in
+_update_commander_band() logging the raw kHz value and resulting band
+whenever it forces an override.  User ran with -t and confirmed Commander
+was reporting the same 50314.6 kHz repeatedly regardless of which band was
+picked in the UI — ruling out a parsing bug on the dx-spotter side.
+
+Immediate fix: new independent settings.commander_track_band boolean
+(later renamed rig_track_band, see Task 3) so VFO-driven band tracking can
+be switched off without disabling Commander rig-control (CW/SSB QSY)
+entirely.  Settings dialog: new checkbox "Track Band filter from Commander
+VFO" in the Commander tab.
+
+FILES CHANGED: src/dxspotter.py, src/appconfig.py, src/settings_dialog.py
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 2 — WSJT-X decode noise: mute terminal output, then mute table too
+─────────────────────────────────────────────────────────────────────────────
+
+First ask: a Settings checkbox to silence WSJT-X decode lines in the
+terminal specifically (PSK/telnet -t output was fine; only WSJT-X was
+noisy).  Added AppConfig.wsjt_terminal_enabled, gated the print in
+_on_wsjt_spot().
+
+Second ask (same session): the checkbox should also stop WSJT-X decodes
+from being added to the spot table, not just the terminal.  Renamed the
+setting to wsjt_show_decodes and moved the gate to the top of
+_on_wsjt_spot() (right after the None-assert, before the counter
+increment) so a disabled WSJT-X feed increments no counters, prints
+nothing, and adds no table rows — while the WsjtxListener keeps running
+in the background so the decode-drought status indicator still works.
+Checkbox relabeled "Show WSJT-X decodes (table + terminal)".
+
+FILES CHANGED: src/appconfig.py, src/settings_dialog.py, src/dxspotter.py
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 3 — Add rigctld as a second rig-control backend (K2K3Controller)
+─────────────────────────────────────────────────────────────────────────────
+
+Context from user: the station used to route rig control through DX Lab
+Commander (with RumLogNG for logging only).  It now uses K2K3Controller,
+which runs its own CAT/PTT bridge exposing a Hamlib-compatible rigctld
+network interface (port 4532 by default, adjustable in K2K3Controller's own
+settings) and coordinates directly with WSJT-X.  RumLogNG is no longer in
+the rig-control loop.  DX Spotter was still hard-wired to Commander only
+(Task 1's stale-50314.6-kHz symptom was a direct consequence).
+
+Scope agreed with user: full parity — the new rigctld backend must support
+all three things Commander already did:
+  1. VFO -> Band filter tracking (the 250 ms poll).
+  2. CW/SSB double-click QSY (_activate_rig_spot).
+  3. Digital dial-frequency QSY before WSJT-X handoff (_send_to_wsjt).
+
+New file: src/rigctld_client.py
+  RigctldClient — mirrors CommanderClient's public interface
+  (get_rx_freq_khz(), set_freq_and_mode()) but speaks the Hamlib rigctld
+  extended-response protocol (commands prefixed with "+", every response
+  terminated by an "RPRT <code>" line):
+    +f          get_freq   -> "Frequency: <Hz>"
+    +F <hz>     set_freq
+    +m          get_mode   -> "Mode: <name>" / "Passband: <n>"
+    +M <mode> <passband>   set_mode (passband 0 = rig default)
+    +s / +S <0|1> <vfo>    get/set split
+    +t / +T <0|1>          get/set PTT
+  VALID_MODES: AM, CW, CWR, FM, LSB, USB, RTTY, RTTYR, PKTUSB, PKTLSB,
+  PKTFM, WFM.  PKTUSB is the Hamlib name for USB-data ("DATA" on Elecraft
+  K2/K3), used as the digital dial-frequency QSY mode (Commander's
+  equivalent is 'DATA-U').
+  set_freq_and_mode() sequence: PTT off, split off, set freq, set mode,
+  sleep(verify_delay), read back state, compare (freq tolerance, mode,
+  split, PTT) — same verification pattern as CommanderClient.
+  is_available(host, port, timeout) — plain TCP-connect probe, same
+  signature as commander_client.is_available.
+  Also defines local TransceiverState / SetResult dataclasses (not shared
+  with commander_client.py — kept independent, both only need .success /
+  .errors duck-typed by dxspotter.py).
+
+src/appconfig.py:
+  Renamed (no back-compat shim — pre-release, config.toml just gets
+  regenerated on next save):
+    commander_enabled      -> rig_control_enabled
+    commander_track_band   -> rig_track_band   (from Task 1)
+  New:
+    rig_backend: str = 'commander'     # 'commander' | 'rigctld'
+    rigctld_host: str = '127.0.0.1'
+    rigctld_port: int = 4532
+    rigctld_timeout: float = 0.2
+    rigctld_verify_delay: float = 0.75
+  Kept commander_host/port/timeout/verify_delay as-is (Commander-specific
+  wiring, unchanged).  [rig] TOML section carries both backends' keys.
+
+src/settings_dialog.py:
+  "Commander" tab renamed "Communication".
+  Common controls (top of tab, apply regardless of backend):
+    - "Enable rig control for CW / SSB spots"   (was Commander-specific)
+    - "Track Band filter from VFO"              (was Commander-specific)
+    - Backend radio group: "DX Lab Commander" / "rigctld (Hamlib /
+      K2K3Controller)"
+  Two backend-specific QGroupBox sections below (TCP port / query timeout /
+  verify delay each), only one enabled at a time — toggled by
+  _update_rig_backend_ui(), wired to the radio group's idToggled signal
+  (same pattern as the existing _update_log_source_ui() for ADIF/RumLogNG).
+  rigctld_host is not exposed in the dialog (matches existing precedent:
+  commander_host isn't editable in the UI either — both default to
+  127.0.0.1 / same-machine).
+  New/renamed properties: rig_control_enabled, rig_track_band, rig_backend,
+  rigctld_port, rigctld_timeout, rigctld_verify_delay.
+
+src/dxspotter.py:
+  New helper _rig_backend_settings() -> (client_cls, is_available_fn, host,
+  port, timeout, verify_delay) — picks CommanderClient/commander_available
+  or RigctldClient/rigctld_available based on self._config.rig_backend.
+  New helper _digital_mode_str() -> 'PKTUSB' (rigctld) or 'DATA-U'
+  (commander) for the digital dial-frequency QSY.
+  _psk_mode_to_commander() renamed _psk_mode_to_rig_mode() — the CW/SSB/
+  AM/FM mode-name mapping turned out to be identical for both backends
+  (Hamlib and Commander both use 'CW','LSB','USB','AM','FM'), so one
+  function now serves both; only the digital mode string differs.
+  All three QSY call sites (_send_to_wsjt's digital QSY,
+  _activate_rig_spot, and the polling loop) now go through
+  _rig_backend_settings() instead of hardcoding CommanderClient.
+  Renamed internals for backend-neutrality:
+    _commander_freq_khz     -> _rig_freq_khz
+    _commander_stop_event   -> _rig_poll_stop_event
+    _commander_poll_thread  -> _rig_poll_thread
+    _commander_poll_loop()  -> _rig_poll_loop()
+    _update_commander_band()-> _update_rig_band()
+    thread name 'commander-band-poll' -> 'rig-band-poll'
+  _effective_bandmap_band() and _open_settings() updated to match.
+
+Explicitly OUT of scope / left untouched:
+  _qsy_rigctld(band) (dxspotter.py, in _apply_settings' band-change
+  handling) is a pre-existing, never-finished stub — computes a mode
+  string but never opens a socket or sends anything.  It would auto-QSY
+  the rig whenever the Band filter dropdown changes.  User confirmed this
+  should stay untouched: manually filtering to a band different from where
+  the rig is currently tuned is a deliberate, desired workflow (e.g.
+  browsing one band while working another), so DX Spotter must not
+  auto-QSY the rig as a side effect of a filter change.  If ever
+  implemented, it needs its own explicit opt-in setting, separate from
+  rig_control_enabled (which now covers double-click QSY + VFO tracking
+  for both backends).  Noted in Claude memory (no-auto-qsy,
+  rig-control-backends) for future sessions.
+
+Verified this session (no live rig / Commander / rigctld available to
+test against):
+  - AppConfig save/load round-trips rig_backend, rig_control_enabled,
+    rig_track_band, and all rigctld_* fields correctly through TOML.
+  - SettingsDialog constructs with rig_backend='rigctld' and correctly
+    reports back all new/renamed properties; _cmd_settings_box /
+    _rigctld_settings_box enable state correctly follows the backend
+    radio selection.
+  - All five touched files (appconfig.py, settings_dialog.py, dxspotter.py,
+    rigctld_client.py, commander_client.py) compile cleanly.
+  User confirmed in-app: manual Band selection now sticks (independent of
+  rig band) and WSJT-X double-click QSY still works correctly.
+
+Not yet verified live: actual rigctld backend against K2K3Controller
+(band-tracking poll, CW/SSB QSY, and digital dial QSY over the rigctld
+protocol specifically) — recommend testing with rig_backend='rigctld'
+selected once K2K3Controller is running.
+
+─────────────────────────────────────────────────────────────────────────────
+FILES CHANGED (this session — complete list)
+─────────────────────────────────────────────────────────────────────────────
+  src/dxspotter.py        — Tasks 1, 2, 3 (band-tracking gate, WSJT-X
+                             show/hide gate, full rig-backend dispatch +
+                             renames)
+  src/appconfig.py        — Tasks 1, 2, 3 (new/renamed settings fields)
+  src/settings_dialog.py  — Tasks 1, 2, 3 (checkboxes, Communication tab
+                             + backend selector/groups)
+  src/rigctld_client.py   — NEW FILE (Task 3)
