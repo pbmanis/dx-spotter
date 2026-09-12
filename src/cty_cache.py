@@ -8,6 +8,7 @@ and the bundled ``.app`` can work offline on first launch.
 Cache location: ``~/Library/Application Support/DXSpotter/cty.plist``
 Source URL: ``https://www.country-files.com/cty/cty.plist``
 """
+
 from __future__ import annotations
 
 import shutil
@@ -19,6 +20,31 @@ from pathlib import Path
 CTY_URL: str = "https://www.country-files.com/cty/cty.plist"
 
 _MAX_AGE_DAYS: int = 30
+
+# country-files.com occasionally renames a DXCC entity to a spelling that the
+# installed pyhamtools ``countryfilemapping.json`` does not yet know, which
+# makes ``LookupLib(lookuptype="countryfile")`` raise ``KeyError`` while
+# parsing.  Each entry maps the name as it appears in the downloaded plist to
+# the name pyhamtools expects.  Applied by :func:`_sanitize_cty`.
+_COUNTRY_NAME_FIXES: dict[str, str] = {
+    "Cabo Verde": "Cape Verde",
+}
+
+
+def _sanitize_cty(path: Path) -> None:
+    # Rewrite the cached plist in place, replacing any country names that
+    # pyhamtools cannot map (see _COUNTRY_NAME_FIXES).  A no-op when the file
+    # contains none of the affected names, so it is safe to call every start.
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    fixed = text
+    for old, new in _COUNTRY_NAME_FIXES.items():
+        fixed = fixed.replace(f"<string>{old}</string>", f"<string>{new}</string>")
+    if fixed != text:
+        path.write_text(fixed, encoding="utf-8")
+        print(f"CTY file sanitized: applied {len(_COUNTRY_NAME_FIXES)} name fix(es)")
 
 
 def cty_plist_path() -> Path:
@@ -88,6 +114,7 @@ def download_cty(dest: Path | None = None) -> Path:
     print(f"Downloading CTY file from {CTY_URL}")
     urllib.request.urlretrieve(CTY_URL, target)
     print(f"CTY file saved: {target}")
+    _sanitize_cty(target)
     return target
 
 
@@ -110,7 +137,9 @@ def ensure_cty(max_age_days: int = _MAX_AGE_DAYS) -> Path:
         Path to the (now-current) cached CTY plist file.
     """
     if cty_is_fresh(max_age_days):
-        return cty_plist_path()
+        path = cty_plist_path()
+        _sanitize_cty(path)
+        return path
 
     # Prefer a bundled seed when running from a PyInstaller bundle so the
     # app can start offline on first launch.
@@ -121,6 +150,7 @@ def ensure_cty(max_age_days: int = _MAX_AGE_DAYS) -> Path:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(seed, dest)
             print(f"CTY file seeded from bundle: {dest}")
+            _sanitize_cty(dest)
             return dest
 
     return download_cty()
