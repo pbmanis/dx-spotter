@@ -4,6 +4,7 @@ This module wires together the MQTT connection to PSK Reporter, the optional
 WSJT-X UDP listener, two telnet cluster connections, the Qt GUI (:class:`~main_window.MainWindow`), and the
 ADIF / RumLogNG contact log.  Application entry point is :func:`main`.
 """
+
 import argparse
 import signal
 import sys
@@ -33,24 +34,25 @@ from wsjtx_listener import WsjtxListener, freq_to_band
 
 # Ham band frequency boundaries in kHz; used to map the rig-control VFO to band string.
 _BAND_RANGES: list[tuple[float, float, str]] = [
-    (1800.0,   2000.0,  '160m'),
-    (3500.0,   4000.0,  '80m'),
-    (5330.0,   5410.0,  '60m'),
-    (7000.0,   7300.0,  '40m'),
-    (10100.0, 10150.0,  '30m'),
-    (14000.0, 14350.0,  '20m'),
-    (18068.0, 18168.0,  '17m'),
-    (21000.0, 21450.0,  '15m'),
-    (24890.0, 24990.0,  '12m'),
-    (28000.0, 29700.0,  '10m'),
-    (50000.0, 54000.0,   '6m'),
-    (144000.0, 148000.0, '2m'),
+    (1800.0, 2000.0, "160m"),
+    (3500.0, 4000.0, "80m"),
+    (5330.0, 5410.0, "60m"),
+    (7000.0, 7300.0, "40m"),
+    (10100.0, 10150.0, "30m"),
+    (14000.0, 14350.0, "20m"),
+    (18068.0, 18168.0, "17m"),
+    (21000.0, 21450.0, "15m"),
+    (24890.0, 24990.0, "12m"),
+    (28000.0, 29700.0, "10m"),
+    (50000.0, 54000.0, "6m"),
+    (144000.0, 148000.0, "2m"),
 ]
 
 # Network Status Symbols
-CONNECTED = "\U0001F310"     # 🌐
-CONNECTING = "\U0001F4E1"    # 📡
-DISCONNECTED = "\U0001F6AB" # 🚫
+CONNECTED = "\U0001f310"  # 🌐
+CONNECTING = "\U0001f4e1"  # 📡
+DISCONNECTED = "\U0001f6ab"  # 🚫
+
 
 class DXSpotter:
     """Top-level application controller for DX Spotter.
@@ -106,8 +108,8 @@ class DXSpotter:
     """
 
     freqs = {
-        "2m":  {"FT2": 144_177_000, "FT8": 144_174_000},
-        "6m":  {"FT2": 50_316_000, "FT4": 50_318_000, "FT8": 50_313_000},
+        "2m": {"FT2": 144_177_000, "FT8": 144_174_000},
+        "6m": {"FT2": 50_316_000, "FT4": 50_318_000, "FT8": 50_313_000},
         "10m": {"FT2": 28_184_000, "FT4": 28_180_000, "FT8": 28_074_000},
         "15m": {"FT2": 21_144_000, "FT4": 21_140_000, "FT8": 21_074_000},
         "17m": {"FT2": 18_108_000, "FT4": 18_104_000, "FT8": 18_100_000},
@@ -137,16 +139,20 @@ class DXSpotter:
         self._telnet3: TelnetCluster | None = None
         self._telnet4: TelnetCluster | None = None
         self._mqtt_listener: MqttListener | None = None
-        self._psk_call_times: dict[str, float] = {}  # call -> last-shown epoch (reshow gate)
-        self._current_adif_path: str = ''
-        self._criterion: str = 'mixed'
+        self._psk_call_times: dict[str, float] = (
+            {}
+        )  # call -> last-shown epoch (reshow gate)
+        self._current_adif_path: str = ""
+        self._criterion: str = "mixed"
         self._config: AppConfig = AppConfig()
         self._last_wsjt_heartbeat: float = 0.0  # epoch of most recent HB from WSJT-X
-        self._rig_freq_khz: float = 0.0   # latest RX freq from the active rig-control backend (GIL-safe)
+        self._rig_freq_khz: float = (
+            0.0  # latest RX freq from the active rig-control backend (GIL-safe)
+        )
         self._rig_poll_stop_event: threading.Event = threading.Event()
         self._rig_poll_thread: threading.Thread | None = None
         self._fcc_build_thread: threading.Thread | None = None
-        self._fcc_status_message: str = ''  # written by worker, read by timer tick
+        self._fcc_status_message: str = ""  # written by worker, read by timer tick
 
     # -- radio control --------------------------------------------------------
 
@@ -156,11 +162,11 @@ class DXSpotter:
         if not band_freqs:
             print(f"rigctld: no frequency mapping for {band!r}")
             return
-        mode = (getattr(self.args, 'mode', None) or 'FT8').upper()
-        if mode in ('FC', 'FCS'):
-            mode = 'FT8'
-        elif mode == 'CS':
-            mode = 'CW'
+        mode = (getattr(self.args, "mode", None) or "FT8").upper()
+        if mode in ("FC", "FCS"):
+            mode = "FT8"
+        elif mode == "CS":
+            mode = "CW"
 
     def _rig_backend_settings(
         self,
@@ -177,21 +183,27 @@ class DXSpotter:
             interfaces shared by :class:`~commander_client.CommanderClient`
             and :class:`~rigctld_client.RigctldClient`.
         """
-        if self._config.rig_backend == 'rigctld':
+        if self._config.rig_backend == "rigctld":
             return (
-                RigctldClient, rigctld_available,
-                self._config.rigctld_host, self._config.rigctld_port,
-                self._config.rigctld_timeout, self._config.rigctld_verify_delay,
+                RigctldClient,
+                rigctld_available,
+                self._config.rigctld_host,
+                self._config.rigctld_port,
+                self._config.rigctld_timeout,
+                self._config.rigctld_verify_delay,
             )
         return (
-            CommanderClient, commander_available,
-            self._config.commander_host, self._config.commander_port,
-            self._config.commander_timeout, self._config.commander_verify_delay,
+            CommanderClient,
+            commander_available,
+            self._config.commander_host,
+            self._config.commander_port,
+            self._config.commander_timeout,
+            self._config.commander_verify_delay,
         )
 
     def _digital_mode_str(self) -> str:
         """Return the active backend's mode string for USB-data (FT8/FT4/FT2) QSY."""
-        return 'PKTUSB' if self._config.rig_backend == 'rigctld' else 'DATA-U'
+        return "PKTUSB" if self._config.rig_backend == "rigctld" else "DATA-U"
 
     # -- helpers --------------------------------------------------------------
 
@@ -321,13 +333,13 @@ class DXSpotter:
         old_mode = self.args.mode
         old_range = self.args.range
 
-        self.args.band = settings['band']
-        self.args.mode = settings['mode']
-        self.args.range = settings['range']
+        self.args.band = settings["band"]
+        self.args.mode = settings["mode"]
+        self.args.range = settings["range"]
 
         # Apply max spot age to table immediately
         if self.window is not None:
-            self.window.set_max_spot_age(settings.get('max_spot_age', 30))
+            self.window.set_max_spot_age(settings.get("max_spot_age", 30))
 
         # Rebuild MQTT topic and resubscribe if it changed
         new_topic = self.build_topic()
@@ -336,9 +348,11 @@ class DXSpotter:
             self._mqtt_listener.resubscribe(self.topic)
 
         # Clear table and reset counters when display-affecting params change
-        if (self.args.band  != old_band  or
-                self.args.mode  != old_mode  or
-                self.args.range != old_range):
+        if (
+            self.args.band != old_band
+            or self.args.mode != old_mode
+            or self.args.range != old_range
+        ):
             self.psk_counter = 0
             self.wsjt_counter = 0
             self.telnet1_counter = 0
@@ -354,16 +368,19 @@ class DXSpotter:
             self._qsy_rigctld(self.args.band)
 
         # Auto-select criterion when switching to 6m
-        if self.args.band == '6m' and self.args.band != old_band and self.window is not None:
+        if (
+            self.args.band == "6m"
+            and self.args.band != old_band
+            and self.window is not None
+        ):
             df = self.window.get_display_filter()
-            self.window.set_criterion('was' if df == 'all' else '6m')
-            
+            self.window.set_criterion("was" if df == "all" else "6m")
 
         # Start / stop WSJT-X listener.  Only do a full restart (socket rebind)
         # when the port changes; for filter/call changes, update in place to
         # avoid a race where the old socket still holds the port for up to 1 s.
         want_wsjt = self._config.wsjt_enabled
-        new_filter = settings['wsjt_filter']
+        new_filter = settings["wsjt_filter"]
         new_port = self._config.wsjt_port
         new_call = self.args.call
         if want_wsjt:
@@ -442,77 +459,90 @@ class DXSpotter:
         """
         assert self.args is not None
         self.psk_counter += 1
-        timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(payload['t']))
-        scall = payload['sc'].replace(".", "/")
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(payload["t"]))
+        scall = payload["sc"].replace(".", "/")
 
         if self.args.mode is not None:
             match self.args.mode.upper():
                 case "FT8":
-                    if payload['md'] != "FT8": return
+                    if payload["md"] != "FT8":
+                        return
                 case "FT4":
-                    if payload['md'] != "FT4": return
+                    if payload["md"] != "FT4":
+                        return
                 case "FT2":
-                    if payload['md'] != "FT2": return
+                    if payload["md"] != "FT2":
+                        return
                 case "CW":
-                    if payload['md'] != "CW":  return
+                    if payload["md"] != "CW":
+                        return
                 case "SSB":
-                    if payload['md'] != "SSB": return
+                    if payload["md"] != "SSB":
+                        return
                 case "FT":
-                    if payload['md'] not in ["FT4", "FT8", "FT2"]: return
+                    if payload["md"] not in ["FT4", "FT8", "FT2"]:
+                        return
                 case "FC":
-                    if payload['md'] not in ["CW", "FT4", "FT8", "FT2"]: return
+                    if payload["md"] not in ["CW", "FT4", "FT8", "FT2"]:
+                        return
                 case "FCS":
-                    if payload['md'] not in ["CW", "FT4", "FT8", "FT2", "SSB"]: return
+                    if payload["md"] not in ["CW", "FT4", "FT8", "FT2", "SSB"]:
+                        return
                 case "CS":
-                    if payload['md'] not in ["CW", "SSB"]: return
-                case 'RTTY':
-                    if payload['md'] != 'RTTY': return
+                    if payload["md"] not in ["CW", "SSB"]:
+                        return
+                case "RTTY":
+                    if payload["md"] != "RTTY":
+                        return
                 case _:
                     return
 
-        if payload['md'] == 'CW':
+        if payload["md"] == "CW":
             colorline = Fore.GREEN
-        elif payload['md'] in ['FT4', 'FT8', 'FT2']:
+        elif payload["md"] in ["FT4", "FT8", "FT2"]:
             colorline = Fore.CYAN
-        elif payload['md'] == 'RTTY':
+        elif payload["md"] == "RTTY":
             colorline = Fore.BLUE
-        elif payload['md'] == 'SSB':
+        elif payload["md"] == "SSB":
             colorline = Fore.MAGENTA
         else:
             colorline = Fore.YELLOW
 
-        if self.args.call is not None and scall == self.args.call.replace(".", "/").upper():
-            call = payload['rc'].replace(".", "/")
-            loc = payload['rl']
+        if (
+            self.args.call is not None
+            and scall == self.args.call.replace(".", "/").upper()
+        ):
+            call = payload["rc"].replace(".", "/")
+            loc = payload["rl"]
             direction = "TX"
             color = colorline + "| TX"
         else:
             call = scall
-            loc = payload['sl']
+            loc = payload["sl"]
             direction = "RX"
             color = colorline + "| RX"
 
         country = self.get_country_text(call)
 
-        freq_offset = self.get_freq_offset(payload['f'], payload['b'], payload['md'])
+        freq_offset = self.get_freq_offset(payload["f"], payload["b"], payload["md"])
         try:
-            distance = int(qth_distance(payload['sl'], payload['rl']))
-            range_km = int(qth_distance(self.my_grid, payload['rl']))
+            distance = int(qth_distance(payload["sl"], payload["rl"]))
+            range_km = int(qth_distance(self.my_grid, payload["rl"]))
         except Exception:
             return
         if self.args.range is not None and range_km > self.args.range:
             return
 
-        if payload['rp'] is None:
-            payload['rp'] = "N/A"
+        if payload["rp"] is None:
+            payload["rp"] = "N/A"
 
         rx_grids = self._config.rx_grid_prefixes
-        if rx_grids and not any(payload['rl'].startswith(g) for g in rx_grids):
+        if rx_grids and not any(payload["rl"].startswith(g) for g in rx_grids):
             return
 
         now = time.time()
         if now - self._psk_call_times.get(call, 0.0) < self._config.pskr_reshow_secs:
-            return   # suppress table update; call was shown too recently
+            return  # suppress table update; call was shown too recently
         self._psk_call_times[call] = now
 
         dxcc = self.get_dxcc(call)
@@ -528,34 +558,44 @@ class DXSpotter:
             )
 
         if self.window is not None:
-            self.window.new_spot.emit({
-                "counter":      total,
-                "direction":    direction,
-                "timestamp":    timestamp,
-                "call":         call,
-                "loc":          loc,
-                "rp":           payload['rp'],
-                "country":      country,
-                "freq_offset":  freq_offset,
-                "distance":     distance,
-                "md":           payload['md'],
-                "b":            payload['b'],
-                "rc":           payload['rc'],
-                "rl":           payload['rl'],
-                "range":        range_km,
-                "unix_time":    payload['t'],
-                "dxcc":         dxcc,
-                "source":       "psk",
-                "abs_freq_hz":  payload['f'],
-            })
+            self.window.new_spot.emit(
+                {
+                    "counter": total,
+                    "direction": direction,
+                    "timestamp": timestamp,
+                    "call": call,
+                    "loc": loc,
+                    "rp": payload["rp"],
+                    "country": country,
+                    "freq_offset": freq_offset,
+                    "distance": distance,
+                    "md": payload["md"],
+                    "b": payload["b"],
+                    "rc": payload["rc"],
+                    "rl": payload["rl"],
+                    "range": range_km,
+                    "unix_time": payload["t"],
+                    "dxcc": dxcc,
+                    "source": "psk",
+                    "abs_freq_hz": payload["f"],
+                }
+            )
 
     # -- WSJT-X callback ------------------------------------------------------
 
-    def _on_wsjt_spot(self, dx_call: str, dx_grid: str, snr: int,
-                      df: int, mode: str, band: str,
-                      unix_time: float, msg: str = '',
-                      delta_t: float = 0.0,
-                      abs_freq_hz: int = 0) -> None:
+    def _on_wsjt_spot(
+        self,
+        dx_call: str,
+        dx_grid: str,
+        snr: int,
+        df: int,
+        mode: str,
+        band: str,
+        unix_time: float,
+        msg: str = "",
+        delta_t: float = 0.0,
+        abs_freq_hz: int = 0,
+    ) -> None:
         # Called from the WsjtxListener background thread when a new decode
         # passes the RESHOW_SECS gate. No range filter is applied: we decoded
         # the signal directly so the station is reachable by definition.
@@ -576,9 +616,9 @@ class DXSpotter:
         # No range filter for WSJT-X spots: we decoded the signal directly,
         # so the station is reachable by definition regardless of km distance.
 
-        dxcc  = self.get_dxcc(dx_call)
+        dxcc = self.get_dxcc(dx_call)
         total = self.psk_counter + self.wsjt_counter
-        timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(unix_time))
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(unix_time))
 
         if self.args.terminal:
             print(
@@ -588,41 +628,43 @@ class DXSpotter:
             )
 
         if self.window is not None:
-            self.window.new_spot.emit({
-                "counter":      total,
-                "direction":    "RX",
-                "timestamp":    timestamp,
-                "call":         dx_call,
-                "loc":          dx_grid,
-                "rp":           f"{snr:+d}",
-                "country":      country,
-                "freq_offset":  df,
-                "distance":     dist_km,
-                "md":           mode,
-                "b":            band,
-                "rc":           self.args.call or "WSJT-X",
-                "rl":           self.my_grid,
-                "range":        0,
-                "unix_time":    unix_time,
-                "dxcc":         dxcc,
-                "source":       "wsjt",
-                "msg":          msg,
-                "delta_t":      delta_t,
-                "abs_freq_hz":  abs_freq_hz,  # absolute Hz — used by BandMap
-            })
+            self.window.new_spot.emit(
+                {
+                    "counter": total,
+                    "direction": "RX",
+                    "timestamp": timestamp,
+                    "call": dx_call,
+                    "loc": dx_grid,
+                    "rp": f"{snr:+d}",
+                    "country": country,
+                    "freq_offset": df,
+                    "distance": dist_km,
+                    "md": mode,
+                    "b": band,
+                    "rc": self.args.call or "WSJT-X",
+                    "rl": self.my_grid,
+                    "range": 0,
+                    "unix_time": unix_time,
+                    "dxcc": dxcc,
+                    "source": "wsjt",
+                    "msg": msg,
+                    "delta_t": delta_t,
+                    "abs_freq_hz": abs_freq_hz,  # absolute Hz — used by BandMap
+                }
+            )
 
     # Mode → allowed set, used in both PSK and telnet mode filters
     _MODE_FILTER: dict[str, frozenset[str]] = {
-        'FT8': frozenset({'FT8'}),
-        'FT4': frozenset({'FT4'}),
-        'FT2': frozenset({'FT2'}),
-        'CW':  frozenset({'CW'}),
-        'SSB': frozenset({'SSB'}),
-        'FT':  frozenset({'FT4', 'FT8', 'FT2'}),
-        'FC':  frozenset({'CW', 'FT4', 'FT8', 'FT2'}),
-        'FCS': frozenset({'CW', 'FT4', 'FT8', 'FT2', 'SSB'}),
-        'CS':  frozenset({'CW', 'SSB'}),
-        'RTTY': frozenset({'RTTY'}),
+        "FT8": frozenset({"FT8"}),
+        "FT4": frozenset({"FT4"}),
+        "FT2": frozenset({"FT2"}),
+        "CW": frozenset({"CW"}),
+        "SSB": frozenset({"SSB"}),
+        "FT": frozenset({"FT4", "FT8", "FT2"}),
+        "FC": frozenset({"CW", "FT4", "FT8", "FT2"}),
+        "FCS": frozenset({"CW", "FT4", "FT8", "FT2", "SSB"}),
+        "CS": frozenset({"CW", "SSB"}),
+        "RTTY": frozenset({"RTTY"}),
     }
 
     def _on_telnet_spot(self, raw: dict, index: int) -> None:
@@ -630,16 +672,18 @@ class DXSpotter:
         # Called from a TelnetCluster background thread — only uses Qt signals
         # (thread-safe) for all GUI interactions.
         assert self.args is not None
-        call = raw['call']
-        freq_hz = raw['abs_freq_hz']
-        mode = raw.get('md', '')
+        call = raw["call"]
+        freq_hz = raw["abs_freq_hz"]
+        mode = raw.get("md", "")
 
         # Apply mode filter
         if self.args.mode is not None:
             allowed = self._MODE_FILTER.get(self.args.mode.upper())
             if allowed is not None and mode not in allowed:
                 if self.args.terminal:
-                    print(f"telnet spot dropped: mode {mode!r} not in {self.args.mode!r} filter")
+                    print(
+                        f"telnet spot dropped: mode {mode!r} not in {self.args.mode!r} filter"
+                    )
                 return
 
         band = freq_to_band(freq_hz)
@@ -650,9 +694,12 @@ class DXSpotter:
 
         # Optionally hide telnet-derived spots from outside the US or Canada
         # (Settings → DX Cluster → "Only show spots from US/Canada spotters").
-        spotter = raw['rc']
-        spotter = spotter[:-2] if spotter.endswith('-#') else spotter
-        if self._config.telnet_us_ca_spotters_only and self.get_dxcc(spotter) not in (291, 1):
+        spotter = raw["rc"]
+        spotter = spotter[:-2] if spotter.endswith("-#") else spotter
+        if self._config.telnet_us_ca_spotters_only and self.get_dxcc(spotter) not in (
+            291,
+            1,
+        ):
             if self.args.terminal:
                 print(f"telnet spot dropped: spotter {spotter} outside US/Canada")
             return
@@ -673,14 +720,16 @@ class DXSpotter:
             range_km = 0
         if self.args.range is not None and range_km > self.args.range > 0:
             if self.args.terminal:
-                print(f"telnet spot dropped: spotter {spotter} out of range ({range_km} km)")
+                print(
+                    f"telnet spot dropped: spotter {spotter} out of range ({range_km} km)"
+                )
             return
 
         dxcc = self.get_dxcc(call)
         country = self.get_country_text(call)
         freq_offset = self.get_freq_offset(freq_hz, band, mode)
-        unix_time = raw['unix_time']
-        timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(unix_time))
+        unix_time = raw["unix_time"]
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(unix_time))
 
         if index == 1:
             self.telnet1_counter += 1
@@ -690,9 +739,14 @@ class DXSpotter:
             self.telnet3_counter += 1
         else:
             self.telnet4_counter += 1
-        total = (self.psk_counter + self.wsjt_counter
-                 + self.telnet1_counter + self.telnet2_counter
-                 + self.telnet3_counter + self.telnet4_counter)
+        total = (
+            self.psk_counter
+            + self.wsjt_counter
+            + self.telnet1_counter
+            + self.telnet2_counter
+            + self.telnet3_counter
+            + self.telnet4_counter
+        )
 
         if self.args.terminal:
             print(
@@ -703,35 +757,37 @@ class DXSpotter:
             )
 
         if self.window is not None:
-            self.window.new_spot.emit({
-                'counter':     total,
-                'direction':   'RX',
-                'timestamp':   timestamp,
-                'call':        call,
-                'loc':         '',
-                'rp':          raw['rp'],
-                'country':     country,
-                'freq_offset': freq_offset,
-                'distance':    0,
-                'md':          mode,
-                'b':           band,
-                'rc':          raw['rc'],
-                'rl':          raw.get('rl', ''),
-                'range':       range_km,
-                'unix_time':   unix_time,
-                'dxcc':        dxcc,
-                'source':      f'telnet{index}',
-                'abs_freq_hz': freq_hz,
-                'msg':         raw.get('comment', ''),
-                'delta_t':     0.0,
-            })
+            self.window.new_spot.emit(
+                {
+                    "counter": total,
+                    "direction": "RX",
+                    "timestamp": timestamp,
+                    "call": call,
+                    "loc": "",
+                    "rp": raw["rp"],
+                    "country": country,
+                    "freq_offset": freq_offset,
+                    "distance": 0,
+                    "md": mode,
+                    "b": band,
+                    "rc": raw["rc"],
+                    "rl": raw.get("rl", ""),
+                    "range": range_km,
+                    "unix_time": unix_time,
+                    "dxcc": dxcc,
+                    "source": f"telnet{index}",
+                    "abs_freq_hz": freq_hz,
+                    "msg": raw.get("comment", ""),
+                    "delta_t": 0.0,
+                }
+            )
 
-    _WSJT_DIGITAL = frozenset({'FT8', 'FT4', 'FT2'})
+    _WSJT_DIGITAL = frozenset({"FT8", "FT4", "FT2"})
 
     def _on_spot_activated(self, spot_data: dict) -> None:
         # Route a double-clicked spot to the appropriate radio-control path.
         # Mode drives routing; source tag (psk / wsjt / telnet / …) does not.
-        mode = spot_data.get('md', '').upper()
+        mode = spot_data.get("md", "").upper()
         if mode in self._WSJT_DIGITAL:
             self._activate_digital_spot(spot_data)
         else:
@@ -743,8 +799,8 @@ class DXSpotter:
         if self.wsjt_listener is None:
             print("Double-click: WSJT-X listener not active")
             return
-        call = spot_data.get('call', '')
-        if spot_data.get('source') != 'wsjt':
+        call = spot_data.get("call", "")
+        if spot_data.get("source") != "wsjt":
             if self.wsjt_listener.get_latest_decode(call) is None:
                 self._prompt_wsjt_not_visible(spot_data)
                 return
@@ -755,48 +811,52 @@ class DXSpotter:
         # Prefers a fresh WSJT-X decode; falls back to stored spot-row values.
         if self.wsjt_listener is None:
             return
-        call   = spot_data.get('call', '')
-        source = spot_data.get('source', 'psk')
+        call = spot_data.get("call", "")
+        source = spot_data.get("source", "psk")
 
         # Prefer the freshest WSJT-X decode — updated every 15 s regardless
         # of the 5-minute display gate, so Reply always has exact fields.
         latest = self.wsjt_listener.get_latest_decode(call)
         low_confidence = False
         if latest:
-            time_ms = latest['ms']
-            snr     = latest['snr']
-            df      = latest['df']
-            delta_t = latest['delta_t']
-            mode    = latest['mode']
-            msg     = latest['msg']
-            low_confidence = latest.get('low_confidence', False)
-            print(f"Double-click: {call} ({source}) — fresh decode "
-                  f"ms={time_ms} df={df} dt={delta_t:.2f}s "
-                  f"snr={snr:+d} lc={low_confidence} msg={msg!r}")
+            time_ms = latest["ms"]
+            snr = latest["snr"]
+            df = latest["df"]
+            delta_t = latest["delta_t"]
+            mode = latest["mode"]
+            msg = latest["msg"]
+            low_confidence = latest.get("low_confidence", False)
+            print(
+                f"Double-click: {call} ({source}) — fresh decode "
+                f"ms={time_ms} df={df} dt={delta_t:.2f}s "
+                f"snr={snr:+d} lc={low_confidence} msg={msg!r}"
+            )
         else:
-            unix_time = spot_data.get('unix_time', 0.0)
-            time_ms   = int(round((unix_time % 86400) * 1000))
+            unix_time = spot_data.get("unix_time", 0.0)
+            time_ms = int(round((unix_time % 86400) * 1000))
             try:
-                snr = int(str(spot_data.get('rp', '0')).lstrip('+'))
+                snr = int(str(spot_data.get("rp", "0")).lstrip("+"))
             except ValueError:
                 snr = 0
-            df      = spot_data.get('freq_offset', 0)
-            delta_t = spot_data.get('delta_t', 0.0)
-            mode    = spot_data.get('md', 'FT8').upper()
-            msg     = spot_data.get('msg', '')
+            df = spot_data.get("freq_offset", 0)
+            delta_t = spot_data.get("delta_t", 0.0)
+            mode = spot_data.get("md", "FT8").upper()
+            msg = spot_data.get("msg", "")
             if not msg:
-                loc = spot_data.get('loc', '')
-                msg = f"CQ {call} {loc[:4]}".strip() if call else ''
-            print(f"Double-click: {call} ({source}) — no cached WSJT-X decode, "
-                  f"using spot-row values")
+                loc = spot_data.get("loc", "")
+                msg = f"CQ {call} {loc[:4]}".strip() if call else ""
+            print(
+                f"Double-click: {call} ({source}) — no cached WSJT-X decode, "
+                f"using spot-row values"
+            )
 
-        loc = spot_data.get('loc', '')
+        loc = spot_data.get("loc", "")
 
         # QSY the rig to the standard FT8/FT4/FT2 dial frequency so the rig-
         # control backend does not leave the radio on the previous CW/SSB
         # frequency.
         if self._config.rig_control_enabled:
-            band = spot_data.get('b', '')
+            band = spot_data.get("b", "")
             dial_hz = self.get_base_freq(band, mode)
             if dial_hz > 0:
                 dial_khz = dial_hz / 1000.0
@@ -821,9 +881,7 @@ class DXSpotter:
                                 f"({mode})"
                             )
                         else:
-                            print(
-                                f"Rig QSY failed for {_call}: {result.errors}"
-                            )
+                            print(f"Rig QSY failed for {_call}: {result.errors}")
                     except Exception as exc:
                         print(f"Rig QSY exception for {_call}: {exc}")
 
@@ -833,19 +891,26 @@ class DXSpotter:
         # Configure sets DX call, Rx DF, and generates standard messages
         # without needing a band-activity match (unlike Reply).
         self.wsjt_listener.configure(
-            rx_df=df, dx_call=call, dx_grid=loc,
+            rx_df=df,
+            dx_call=call,
+            dx_grid=loc,
             generate_messages=True,
         )
         # Reply additionally selects the matching row in band activity
         # (visual feedback); keep it in case it works on this WSJT-X build.
         self.wsjt_listener.reply_to_decode(
-            time_ms=time_ms, snr=snr, df=df, mode=mode,
-            message=msg, delta_t=delta_t, low_confidence=low_confidence,
+            time_ms=time_ms,
+            snr=snr,
+            df=df,
+            mode=mode,
+            message=msg,
+            delta_t=delta_t,
+            low_confidence=low_confidence,
         )
 
     def _prompt_wsjt_not_visible(self, spot_data: dict) -> None:
         # Ask the user whether to send a spot that isn't in the WSJT-X decoded list.
-        call = spot_data.get('call', '')
+        call = spot_data.get("call", "")
         box = QMessageBox(self.window)
         box.setWindowTitle("Spot not visible in WSJT-X")
         box.setText(f"<b>{call}</b> is not currently visible in WSJT-X.")
@@ -881,7 +946,9 @@ class DXSpotter:
         if not self._config.pskr_enabled:
             self.window.set_pskr_status("PSKR: disabled", ok=None)
             return
-        connected = self._mqtt_listener.connected if self._mqtt_listener is not None else False
+        connected = (
+            self._mqtt_listener.connected if self._mqtt_listener is not None else False
+        )
         if connected:
             self.window.set_pskr_status(f"PSKR: {CONNECTED}", ok=True)
         else:
@@ -892,15 +959,21 @@ class DXSpotter:
         if self.window is None:
             return
         for index, cluster in (
-            (1, self._telnet1), (2, self._telnet2),
-            (3, self._telnet3), (4, self._telnet4),
+            (1, self._telnet1),
+            (2, self._telnet2),
+            (3, self._telnet3),
+            (4, self._telnet4),
         ):
             if cluster is None:
-                self.window.set_telnet_status(index, f"T{index}: {DISCONNECTED}", ok=None)
+                self.window.set_telnet_status(
+                    index, f"T{index}: {DISCONNECTED}", ok=None
+                )
             elif cluster.connected:
                 self.window.set_telnet_status(index, f"T{index}: {CONNECTED}", ok=True)
             else:
-                self.window.set_telnet_status(index, f"T{index}: {CONNECTING}", ok=False)
+                self.window.set_telnet_status(
+                    index, f"T{index}: {CONNECTING}", ok=False
+                )
 
     def _on_wsjt_heartbeat(self) -> None:
         """Called from the WSJT-X listener thread on first packet and each incoming Heartbeat."""
@@ -923,7 +996,7 @@ class DXSpotter:
             no_spot_secs = self._config.wsjt_no_spot_mins * 60
             last_dec = self.wsjt_listener.last_decode_time
             if last_dec == 0.0 or (now - last_dec) > no_spot_secs:
-                self.window.set_wsjt_status(f"WSJT-X: {CONNECTED}", ok='warn')
+                self.window.set_wsjt_status(f"WSJT-X: {CONNECTED}", ok="warn")
             else:
                 self.window.set_wsjt_status(f"WSJT-X: {CONNECTED}", ok=True)
 
@@ -945,11 +1018,13 @@ class DXSpotter:
         # frequency in Hz (self.freqs has no entry for these modes, so
         # get_freq_offset returns payload['f'] - 0 = payload['f']).
         if not self._config.rig_control_enabled:
-            print(f"Double-click: rig control not enabled for "
-                  f"{spot_data.get('call')} ({spot_data.get('md')})")
+            print(
+                f"Double-click: rig control not enabled for "
+                f"{spot_data.get('call')} ({spot_data.get('md')})"
+            )
             return
-        psk_mode = spot_data.get('md', '').upper()
-        freq_khz = spot_data.get('freq_offset', 0) / 1000.0
+        psk_mode = spot_data.get("md", "").upper()
+        freq_khz = spot_data.get("freq_offset", 0) / 1000.0
         rig_mode = self._psk_mode_to_rig_mode(psk_mode, freq_khz)
         if rig_mode is None:
             print(f"Double-click: no rig mode mapping for {psk_mode!r}")
@@ -957,15 +1032,16 @@ class DXSpotter:
         client_cls, avail_fn, host, port, timeout, verify_delay = (
             self._rig_backend_settings()
         )
-        call = spot_data.get('call', '')
+        call = spot_data.get("call", "")
 
         def _run() -> None:
             if not avail_fn(host, port):
                 print(f"Rig control not reachable at {host}:{port}")
                 return
             client = client_cls(host=host, port=port, timeout=timeout)
-            result = client.set_freq_and_mode(freq_khz, rig_mode,
-                                              verify_delay=verify_delay)
+            result = client.set_freq_and_mode(
+                freq_khz, rig_mode, verify_delay=verify_delay
+            )
             if result.success:
                 print(f"Rig QSY: {call} → {freq_khz:.3f} kHz {rig_mode}")
             else:
@@ -980,11 +1056,11 @@ class DXSpotter:
         # names for CW/AM/FM/LSB/USB. SSB is split into LSB (below 10 MHz /
         # 40 m and lower) and USB above. Digital modes return None — they are
         # handled via WSJT-X, not rig control.
-        if psk_mode == 'CW':
-            return 'CW'
-        if psk_mode == 'SSB':
-            return 'LSB' if freq_khz < 10_000.0 else 'USB'
-        if psk_mode in ('AM', 'FM', 'LSB', 'USB'):
+        if psk_mode == "CW":
+            return "CW"
+        if psk_mode == "SSB":
+            return "LSB" if freq_khz < 10_000.0 else "USB"
+        if psk_mode in ("AM", "FM", "LSB", "USB"):
             return psk_mode
         return None
 
@@ -1018,9 +1094,11 @@ class DXSpotter:
         # has seen a new band, update the Band parameter — which triggers the
         # normal settings-change chain (MQTT resubscribe, table clear, WAS
         # label update).
-        if (not self._config.rig_control_enabled
-                or not self._config.rig_track_band
-                or self.window is None):
+        if (
+            not self._config.rig_control_enabled
+            or not self._config.rig_track_band
+            or self.window is None
+        ):
             return
         freq = self._rig_freq_khz
         if freq <= 0.0:
@@ -1029,9 +1107,13 @@ class DXSpotter:
         if band is None or band == self.args.band:
             return
         if self.args.terminal:
-            print(f"Rig VFO override: reported {freq:.1f} kHz -> band {band!r} "
-                  f"(replacing filter {self.args.band!r})")
-        self.window._params.child('Data Filters').child('Band').setValue(band)  # noqa: SLF001
+            print(
+                f"Rig VFO override: reported {freq:.1f} kHz -> band {band!r} "
+                f"(replacing filter {self.args.band!r})"
+            )
+        self.window._params.child("Data Filters").child("Band").setValue(
+            band
+        )  # noqa: SLF001
 
     def _effective_bandmap_band(self) -> str | None:
         # Determine the band the bandmap should display, in priority order:
@@ -1082,28 +1164,70 @@ class DXSpotter:
         cfg = self._config
 
         parser = argparse.ArgumentParser()
-        parser.add_argument("-c", "--call", required=False, default=None,
-                            help="Call sign")
-        parser.add_argument("-b", "--band", required=False,
-                            choices=["2m", "6m", "10m", "15m", "17m", "20m", "30m", "40m", "80m", "160m"],
-                            help="Band (e.g. 20m)")
-        parser.add_argument("-m", "--mode", required=False,
-                            choices=["FT8", "FT4", "FT2", "CW", "SSB", "FC", "FCS", "CS", "FT", "RTTY"],
-                            help="Mode (e.g. FT8)")
-        parser.add_argument("-r", "--range", required=False, type=int,
-                            help="Maximum rx station range from my grid in km (0 = no limit)")
-        parser.add_argument("-t", "--terminal", action="store_true", default=False,
-                            help="Print spots to the terminal (default: off)")
-        parser.add_argument("-W", "--wsjt", action="store_true", default=None,
-                            help="Enable WSJT-X UDP listener")
-        parser.add_argument("-wf", "--wsjt-filter", choices=["CQ", "all", "me"],
-                            help="WSJT-X decode filter")
-        parser.add_argument("--wsjt-port", type=int,
-                            help="WSJT-X UDP port")
-        parser.add_argument("--cty-plist", required=False, default=None,
-                            help="Local filename of CTY Plist from country-code")
+        parser.add_argument(
+            "-c", "--call", required=False, default=None, help="Call sign"
+        )
+        parser.add_argument(
+            "-b",
+            "--band",
+            required=False,
+            choices=[
+                "2m",
+                "6m",
+                "10m",
+                "15m",
+                "17m",
+                "20m",
+                "30m",
+                "40m",
+                "80m",
+                "160m",
+            ],
+            help="Band (e.g. 20m)",
+        )
+        parser.add_argument(
+            "-m",
+            "--mode",
+            required=False,
+            choices=["FT8", "FT4", "FT2", "CW", "SSB", "FC", "FCS", "CS", "FT", "RTTY"],
+            help="Mode (e.g. FT8)",
+        )
+        parser.add_argument(
+            "-r",
+            "--range",
+            required=False,
+            type=int,
+            help="Maximum rx station range from my grid in km (0 = no limit)",
+        )
+        parser.add_argument(
+            "-t",
+            "--terminal",
+            action="store_true",
+            default=False,
+            help="Print spots to the terminal (default: off)",
+        )
+        parser.add_argument(
+            "-W",
+            "--wsjt",
+            action="store_true",
+            default=None,
+            help="Enable WSJT-X UDP listener",
+        )
+        parser.add_argument(
+            "-wf",
+            "--wsjt-filter",
+            choices=["CQ", "all", "me"],
+            help="WSJT-X decode filter",
+        )
+        parser.add_argument("--wsjt-port", type=int, help="WSJT-X UDP port")
+        parser.add_argument(
+            "--cty-plist",
+            required=False,
+            default=None,
+            help="Local filename of CTY Plist from country-code",
+        )
         # macOS passes -psn_XXXXXXXX when launching as a .app bundle; strip it.
-        argv = [a for a in sys.argv[1:] if not a.startswith('-psn')]
+        argv = [a for a in sys.argv[1:] if not a.startswith("-psn")]
         cli = parser.parse_args(argv)
 
         # Merge: CLI wins over config when explicitly provided.
@@ -1116,16 +1240,28 @@ class DXSpotter:
         cli.wsjt_filter = cli.wsjt_filter or cfg.decode_filter
         cli.wsjt_port = cli.wsjt_port if cli.wsjt_port is not None else cfg.wsjt_port
         self.args = cli
-        self.my_grid    = cfg.my_grid
+        self.my_grid = cfg.my_grid
         self._criterion = cfg.criterion
         # print(self.args)
 
         print("Loading lookup directory")
         cty_path = self.args.cty_plist or str(cty_cache.ensure_cty())
-        lookuplib = LookupLib(lookuptype="countryfile", filename=cty_path)
-        self.cinfo = Callinfo(lookuplib)
+        try:
+            lookuplib = LookupLib(lookuptype="countryfile", filename=cty_path)
+            self.cinfo = Callinfo(lookuplib)
+        except Exception as exc:
+            # A malformed or unmappable cty.plist (e.g. a country renamed
+            # upstream to a spelling pyhamtools does not know) must not abort
+            # startup.  Degrade gracefully: DXCC lookups return -1 until the
+            # cty file is fixed (see cty_cache._sanitize_cty).
+            print(
+                f"Error: could not load country lookup from {cty_path}: {exc}\n"
+                "DXCC award coloring and spotter filtering are disabled until "
+                'the CTY file is updated (Settings → "Refresh CTY…").'
+            )
+            self.cinfo = None
 
-        if self.args.call is not None:
+        if self.cinfo is not None and self.args.call is not None:
             if not self.cinfo.is_valid_callsign(self.args.call.replace(".", "/")):
                 print(f"Error: Callsign {self.args.call} is not valid!")
                 sys.exit(1)
@@ -1144,7 +1280,7 @@ class DXSpotter:
         self.adif_log = self._load_log(cfg)
 
         app = QApplication(sys.argv)
-        app.setStyle('Fusion')
+        app.setStyle("Fusion")
         signal.signal(signal.SIGINT, signal.SIG_DFL)
         # For PyInstaller bundles (sys.frozen=True) the dock icon comes from the
         # bundle's ICNS via Info.plist.  Calling setWindowIcon() here would
@@ -1168,7 +1304,7 @@ class DXSpotter:
         self.window.restyle_spots(self.adif_log, self._criterion)
         self.window.set_max_spot_age(cfg.max_spot_age)
         self.window.set_log_info(self._log_info_text(cfg, self.adif_log))
-        self.window.set_station_info(self.args.call or '', self.my_grid)
+        self.window.set_station_info(self.args.call or "", self.my_grid)
         self.window.update_paper_only_list(self._build_paper_only_list(self.adif_log))
         self.window.show()
 
@@ -1180,9 +1316,12 @@ class DXSpotter:
         def _tick():
             assert self.window is not None
             self.window.update_counts(
-                self.psk_counter, self.wsjt_counter,
-                self.telnet1_counter, self.telnet2_counter,
-                self.telnet3_counter, self.telnet4_counter,
+                self.psk_counter,
+                self.wsjt_counter,
+                self.telnet1_counter,
+                self.telnet2_counter,
+                self.telnet3_counter,
+                self.telnet4_counter,
             )
             self._update_wsjt_status()
             self._update_pskr_status()
@@ -1191,7 +1330,7 @@ class DXSpotter:
             self.window.set_bandmap_band(self._effective_bandmap_band())
             if self._fcc_status_message:
                 self.window.statusBar().showMessage(self._fcc_status_message, 6000)
-                self._fcc_status_message = ''
+                self._fcc_status_message = ""
 
         self._count_timer.timeout.connect(_tick)
         self._count_timer.start(250)
@@ -1199,7 +1338,7 @@ class DXSpotter:
         self._rig_poll_thread = threading.Thread(
             target=self._rig_poll_loop,
             daemon=True,
-            name='rig-band-poll',
+            name="rig-band-poll",
         )
         self._rig_poll_thread.start()
 
@@ -1232,30 +1371,42 @@ class DXSpotter:
         # Start DX cluster telnet connections if configured
         if cfg.telnet1_enabled and cfg.telnet1_host and cfg.telnet1_callsign:
             self._telnet1 = TelnetCluster(
-                cfg.telnet1_host, cfg.telnet1_port, cfg.telnet1_callsign,
+                cfg.telnet1_host,
+                cfg.telnet1_port,
+                cfg.telnet1_callsign,
                 on_spot=lambda raw: self._on_telnet_spot(raw, 1),
                 index=1,
+                command=cfg.telnet1_command,
             )
             self._telnet1.start()
         if cfg.telnet2_enabled and cfg.telnet2_host and cfg.telnet2_callsign:
             self._telnet2 = TelnetCluster(
-                cfg.telnet2_host, cfg.telnet2_port, cfg.telnet2_callsign,
+                cfg.telnet2_host,
+                cfg.telnet2_port,
+                cfg.telnet2_callsign,
                 on_spot=lambda raw: self._on_telnet_spot(raw, 2),
                 index=2,
+                command=cfg.telnet2_command,
             )
             self._telnet2.start()
         if cfg.telnet3_enabled and cfg.telnet3_host and cfg.telnet3_callsign:
             self._telnet3 = TelnetCluster(
-                cfg.telnet3_host, cfg.telnet3_port, cfg.telnet3_callsign,
+                cfg.telnet3_host,
+                cfg.telnet3_port,
+                cfg.telnet3_callsign,
                 on_spot=lambda raw: self._on_telnet_spot(raw, 3),
                 index=3,
+                command=cfg.telnet3_command,
             )
             self._telnet3.start()
         if cfg.telnet4_enabled and cfg.telnet4_host and cfg.telnet4_callsign:
             self._telnet4 = TelnetCluster(
-                cfg.telnet4_host, cfg.telnet4_port, cfg.telnet4_callsign,
+                cfg.telnet4_host,
+                cfg.telnet4_port,
+                cfg.telnet4_callsign,
                 on_spot=lambda raw: self._on_telnet_spot(raw, 4),
                 index=4,
+                command=cfg.telnet4_command,
             )
             self._telnet4.start()
 
@@ -1279,9 +1430,9 @@ class DXSpotter:
         sys.exit(app.exec())
 
     @staticmethod
-    def _load_log(cfg) -> 'ADIFLog | None':
+    def _load_log(cfg) -> "ADIFLog | None":
         """Load the log from whichever source the config specifies (read-only)."""
-        if cfg.log_source == 'rumlogng':
+        if cfg.log_source == "rumlogng":
             print("Loading RumLogNG CloudKit database (read-only)")
             return ADIFLog.from_rumlogng(config=cfg)
         if cfg.adif_path:
@@ -1289,30 +1440,31 @@ class DXSpotter:
             return ADIFLog(cfg.adif_path)
         return None
 
-    def _build_paper_only_list(self, log: 'ADIFLog | None') -> list[dict]:
+    def _build_paper_only_list(self, log: "ADIFLog | None") -> list[dict]:
         # Return country-enriched, country-sorted confirmed QSOs for paper-only DXCC entities.
         if log is None:
             return []
         entries = log.paper_only_confirmed_entries()
         result = []
         for entry in entries:
-            country = self.get_country_text(entry['call'])
-            result.append({**entry, 'country': country})
-        result.sort(key=lambda x: (x['country'].lower(), x['call'].upper()))
+            country = self.get_country_text(entry["call"])
+            result.append({**entry, "country": country})
+        result.sort(key=lambda x: (x["country"].lower(), x["call"].upper()))
         return result
 
     @staticmethod
-    def _log_info_text(cfg, log: 'ADIFLog | None') -> str:
+    def _log_info_text(cfg, log: "ADIFLog | None") -> str:
         if log is None:
             return "No log loaded"
-        if cfg.log_source == 'rumlogng':
+        if cfg.log_source == "rumlogng":
             source = "RUMlogNG"
         else:
             from pathlib import Path
+
             source = Path(cfg.adif_path).name if cfg.adif_path else "ADIF"
-        total    = log.confirmed_dxcc_count
-        lotw     = log.confirmed_lotw_dxcc_count
-        paper    = log.confirmed_paper_only_dxcc_count
+        total = log.confirmed_dxcc_count
+        lotw = log.confirmed_lotw_dxcc_count
+        paper = log.confirmed_paper_only_dxcc_count
         conf_str = f"{total} DXCC confirmed  ({lotw} LoTW,  {paper} paper only)"
         return f"Log: {source}   |   {log.total_qsos:,} QSOs   |   {conf_str}"
 
@@ -1323,11 +1475,11 @@ class DXSpotter:
         s = self.window._collect_settings()  # noqa: SLF001
         cfg = self._config
         cfg.my_grid = self.my_grid
-        cfg.band = s.get('band') or cfg.band
-        cfg.mode = s.get('mode', cfg.mode)
-        cfg.decode_filter = s.get('wsjt_filter', cfg.decode_filter)
-        cfg.max_range = s.get('range') or 0
-        cfg.max_spot_age = s.get('max_spot_age', cfg.max_spot_age)
+        cfg.band = s.get("band") or cfg.band
+        cfg.mode = s.get("mode", cfg.mode)
+        cfg.decode_filter = s.get("wsjt_filter", cfg.decode_filter)
+        cfg.max_range = s.get("range") or 0
+        cfg.max_spot_age = s.get("max_spot_age", cfg.max_spot_age)
         cfg.criterion = self.window.get_criterion()
         cfg.display_filter = self.window.get_display_filter()
         save_config(cfg)
@@ -1342,15 +1494,22 @@ class DXSpotter:
         self.window.restyle_spots(self.adif_log, self._criterion)
         self.window.set_log_info(self._log_info_text(cfg, self.adif_log))
         self.window.update_paper_only_list(self._build_paper_only_list(self.adif_log))
-        src = 'RumLogNG' if cfg.log_source == 'rumlogng' else cfg.adif_path
+        src = "RumLogNG" if cfg.log_source == "rumlogng" else cfg.adif_path
         print(f"Log reloaded: {src}")
 
     def _reinit_cinfo(self) -> None:
-        # Reload LookupLib from the (just-refreshed) cache file.
-        cty_path = str(cty_cache.cty_plist_path())
-        lookuplib = LookupLib(lookuptype="countryfile", filename=cty_path)
-        self.cinfo = Callinfo(lookuplib)
-        print(f"CTY reloaded: {cty_path}")
+        # Reload LookupLib from the (just-refreshed) cache file.  Sanitize
+        # first in case the refresh downloaded a plist with a country name
+        # pyhamtools cannot map, and degrade gracefully if the load fails.
+        cty_path = cty_cache.cty_plist_path()
+        cty_cache._sanitize_cty(cty_path)
+        try:
+            lookuplib = LookupLib(lookuptype="countryfile", filename=str(cty_path))
+            self.cinfo = Callinfo(lookuplib)
+            print(f"CTY reloaded: {cty_path}")
+        except Exception as exc:
+            print(f"Error: could not reload country lookup from {cty_path}: {exc}")
+            self.cinfo = None
 
     def _start_fcc_update(self) -> None:
         # Start a background FCC database build if one is not already running.
@@ -1363,7 +1522,7 @@ class DXSpotter:
         self._fcc_build_thread = threading.Thread(
             target=self._fcc_build_worker,
             daemon=True,
-            name='fcc-db-build',
+            name="fcc-db-build",
         )
         self._fcc_build_thread.start()
 
@@ -1405,18 +1564,22 @@ class DXSpotter:
             telnet1_host=cfg.telnet1_host,
             telnet1_port=cfg.telnet1_port,
             telnet1_callsign=cfg.telnet1_callsign,
+            telnet1_command=cfg.telnet1_command,
             telnet2_enabled=cfg.telnet2_enabled,
             telnet2_host=cfg.telnet2_host,
             telnet2_port=cfg.telnet2_port,
             telnet2_callsign=cfg.telnet2_callsign,
+            telnet2_command=cfg.telnet2_command,
             telnet3_enabled=cfg.telnet3_enabled,
             telnet3_host=cfg.telnet3_host,
             telnet3_port=cfg.telnet3_port,
             telnet3_callsign=cfg.telnet3_callsign,
+            telnet3_command=cfg.telnet3_command,
             telnet4_enabled=cfg.telnet4_enabled,
             telnet4_host=cfg.telnet4_host,
             telnet4_port=cfg.telnet4_port,
             telnet4_callsign=cfg.telnet4_callsign,
+            telnet4_command=cfg.telnet4_command,
             telnet_us_ca_spotters_only=cfg.telnet_us_ca_spotters_only,
             pskr_enabled=cfg.pskr_enabled,
             pskr_host=cfg.pskr_host,
@@ -1437,7 +1600,7 @@ class DXSpotter:
         cfg.udp_port = dlg.udp_port
         self.my_grid = dlg.my_grid
         cfg.my_grid = dlg.my_grid
-        self.window.set_station_info(self.args.call or '', self.my_grid)
+        self.window.set_station_info(self.args.call or "", self.my_grid)
         cfg.rx_grid_prefixes = dlg.rx_grid_prefixes
         cfg.wsjt_reshow_secs = dlg.wsjt_reshow_secs
         cfg.wsjt_no_spot_mins = dlg.wsjt_no_spot_mins
@@ -1458,20 +1621,25 @@ class DXSpotter:
             or cfg.telnet1_host != dlg.telnet1_host
             or cfg.telnet1_port != dlg.telnet1_port
             or cfg.telnet1_callsign != dlg.telnet1_callsign
+            or cfg.telnet1_command != dlg.telnet1_command
         )
         cfg.telnet1_enabled = dlg.telnet1_enabled
         cfg.telnet1_host = dlg.telnet1_host
         cfg.telnet1_port = dlg.telnet1_port
         cfg.telnet1_callsign = dlg.telnet1_callsign
+        cfg.telnet1_command = dlg.telnet1_command
         if t1_changed:
             if self._telnet1 is not None:
                 self._telnet1.stop()
             self._telnet1 = None
             if cfg.telnet1_enabled and cfg.telnet1_host and cfg.telnet1_callsign:
                 self._telnet1 = TelnetCluster(
-                    cfg.telnet1_host, cfg.telnet1_port, cfg.telnet1_callsign,
+                    cfg.telnet1_host,
+                    cfg.telnet1_port,
+                    cfg.telnet1_callsign,
                     on_spot=lambda raw: self._on_telnet_spot(raw, 1),
                     index=1,
+                    command=cfg.telnet1_command,
                 )
                 self._telnet1.start()
 
@@ -1480,20 +1648,25 @@ class DXSpotter:
             or cfg.telnet2_host != dlg.telnet2_host
             or cfg.telnet2_port != dlg.telnet2_port
             or cfg.telnet2_callsign != dlg.telnet2_callsign
+            or cfg.telnet2_command != dlg.telnet2_command
         )
         cfg.telnet2_enabled = dlg.telnet2_enabled
         cfg.telnet2_host = dlg.telnet2_host
         cfg.telnet2_port = dlg.telnet2_port
         cfg.telnet2_callsign = dlg.telnet2_callsign
+        cfg.telnet2_command = dlg.telnet2_command
         if t2_changed:
             if self._telnet2 is not None:
                 self._telnet2.stop()
             self._telnet2 = None
             if cfg.telnet2_enabled and cfg.telnet2_host and cfg.telnet2_callsign:
                 self._telnet2 = TelnetCluster(
-                    cfg.telnet2_host, cfg.telnet2_port, cfg.telnet2_callsign,
+                    cfg.telnet2_host,
+                    cfg.telnet2_port,
+                    cfg.telnet2_callsign,
                     on_spot=lambda raw: self._on_telnet_spot(raw, 2),
                     index=2,
+                    command=cfg.telnet2_command,
                 )
                 self._telnet2.start()
 
@@ -1502,20 +1675,25 @@ class DXSpotter:
             or cfg.telnet3_host != dlg.telnet3_host
             or cfg.telnet3_port != dlg.telnet3_port
             or cfg.telnet3_callsign != dlg.telnet3_callsign
+            or cfg.telnet3_command != dlg.telnet3_command
         )
         cfg.telnet3_enabled = dlg.telnet3_enabled
         cfg.telnet3_host = dlg.telnet3_host
         cfg.telnet3_port = dlg.telnet3_port
         cfg.telnet3_callsign = dlg.telnet3_callsign
+        cfg.telnet3_command = dlg.telnet3_command
         if t3_changed:
             if self._telnet3 is not None:
                 self._telnet3.stop()
             self._telnet3 = None
             if cfg.telnet3_enabled and cfg.telnet3_host and cfg.telnet3_callsign:
                 self._telnet3 = TelnetCluster(
-                    cfg.telnet3_host, cfg.telnet3_port, cfg.telnet3_callsign,
+                    cfg.telnet3_host,
+                    cfg.telnet3_port,
+                    cfg.telnet3_callsign,
                     on_spot=lambda raw: self._on_telnet_spot(raw, 3),
                     index=3,
+                    command=cfg.telnet3_command,
                 )
                 self._telnet3.start()
 
@@ -1524,20 +1702,25 @@ class DXSpotter:
             or cfg.telnet4_host != dlg.telnet4_host
             or cfg.telnet4_port != dlg.telnet4_port
             or cfg.telnet4_callsign != dlg.telnet4_callsign
+            or cfg.telnet4_command != dlg.telnet4_command
         )
         cfg.telnet4_enabled = dlg.telnet4_enabled
         cfg.telnet4_host = dlg.telnet4_host
         cfg.telnet4_port = dlg.telnet4_port
         cfg.telnet4_callsign = dlg.telnet4_callsign
+        cfg.telnet4_command = dlg.telnet4_command
         if t4_changed:
             if self._telnet4 is not None:
                 self._telnet4.stop()
             self._telnet4 = None
             if cfg.telnet4_enabled and cfg.telnet4_host and cfg.telnet4_callsign:
                 self._telnet4 = TelnetCluster(
-                    cfg.telnet4_host, cfg.telnet4_port, cfg.telnet4_callsign,
+                    cfg.telnet4_host,
+                    cfg.telnet4_port,
+                    cfg.telnet4_callsign,
                     on_spot=lambda raw: self._on_telnet_spot(raw, 4),
                     index=4,
+                    command=cfg.telnet4_command,
                 )
                 self._telnet4.start()
 
@@ -1581,8 +1764,10 @@ class DXSpotter:
             self.adif_log = self._load_log(cfg)
             self.window.restyle_spots(self.adif_log, self._criterion)
             self.window.set_log_info(self._log_info_text(cfg, self.adif_log))
-            self.window.update_paper_only_list(self._build_paper_only_list(self.adif_log))
-            src_label = 'RumLogNG' if new_source == 'rumlogng' else f'ADIF: {new_adif}'
+            self.window.update_paper_only_list(
+                self._build_paper_only_list(self.adif_log)
+            )
+            src_label = "RumLogNG" if new_source == "rumlogng" else f"ADIF: {new_adif}"
             print(f"Log source changed → {src_label}")
 
 
