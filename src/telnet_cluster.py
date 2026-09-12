@@ -36,6 +36,7 @@ the frequency using IARU band plans.  Trailing control characters (e.g. the
 terminal-bell ``\\x07`` some nodes append to alert spots) are stripped from
 the comment.
 """
+
 from __future__ import annotations
 
 import re
@@ -47,15 +48,15 @@ from typing import Callable
 # Standard format: "DX de <spotter>: <freq> <dx_call> <comment>"
 # Groups: (spotter_call, freq_kHz, dx_call, comment)
 _SPOT_RE = re.compile(
-    r'^DX\s+de\s+([A-Z0-9/\-#]+)\s*:\s+([\d.]+)\s+([A-Z0-9/]+)\s*(.*)',
+    r"^DX\s+de\s+([A-Z0-9/\-#]+)\s*:\s+([\d.]+)\s+([A-Z0-9/]+)\s*(.*)",
     re.IGNORECASE,
 )
 
 # Alternate format: "<freq>  <dx_call>  <DD-Mon-YYYY>  <HHMMZ>  <comment>  <<spotter>>"
 # Groups: (freq_kHz, dx_call, comment, spotter_call)
 _SPOT_RE_ALT = re.compile(
-    r'^\s*([\d.]+)\s+([A-Z0-9/]+)\s+'
-    r'\d{2}-[A-Za-z]{3}-\d{4}\s+\d{4}[Zz]\s*(.*?)\s*<([A-Z0-9/\-#]+)>\s*$',
+    r"^\s*([\d.]+)\s+([A-Z0-9/]+)\s+"
+    r"\d{2}-[A-Za-z]{3}-\d{4}\s+\d{4}[Zz]\s*(.*?)\s*<([A-Z0-9/\-#]+)>\s*$",
     re.IGNORECASE,
 )
 
@@ -63,7 +64,7 @@ _SPOT_RE_ALT = re.compile(
 # DX de OE3KLU-#: 28187.90  OE3XAC         CW     5 dB  14 WPM  BEACON  0032Z
 # Groups: (spotter_call, freq_kHz, dx_call) followed by mode, snr, speed, cq, time comment)
 _SPOT_RE_RBN = re.compile(
-    r'^DX\s+de\s+([A-Z0-9/\-#]+)\s*:\s+([\d.]+)\s+([A-Z0-9/]+)\s*(.*)',
+    r"^DX\s+de\s+([A-Z0-9/\-#]+)\s*:\s+([\d.]+)\s+([A-Z0-9/]+)\s*(.*)",
     re.IGNORECASE,
 )
 
@@ -74,31 +75,66 @@ _SPOT_RE_RBN = re.compile(
 # Tried only after the colon-requiring formats above, since a colon right
 # after the spotter call already prevents this pattern from matching.
 _SPOT_RE_NO_COLON = re.compile(
-    r'^DX\s+de\s+([A-Z0-9/\-#]+)\s+([\d.]+)\s+([A-Z0-9/]+)\s*(.*)',
+    r"^DX\s+de\s+([A-Z0-9/\-#]+)\s+([\d.]+)\s+([A-Z0-9/]+)\s*(.*)",
     re.IGNORECASE,
 )
 
 # Matches SNR values like "-10 dB", "+5dB", "-8 dB" in comments
-_SNR_RE = re.compile(r'([+-]?\d+)\s*dB', re.IGNORECASE)
+_SNR_RE = re.compile(r"([+-]?\d+)\s*dB", re.IGNORECASE)
+
+# A line "looks like a spot" if it starts with "DX de" (standard/RBN/no-colon
+# formats) or with a bare frequency (alternate format).  Only such lines are
+# logged when they fail to parse; login banners, help text, status lines, and
+# command prompts are silently ignored to avoid flooding the console.
+_LOOKS_LIKE_SPOT_RE = re.compile(r"^\s*(?:DX\s+de\b|\d{3,}\.\d)", re.IGNORECASE)
 
 # Mode keywords searched in the spot comment (in priority order)
 _MODE_KEYWORDS: tuple[str, ...] = (
-    'FT8', 'FT4', 'FT2', 'CW', 'SSB', 'AM', 'FM', 'RTTY', 'PSK', 'JS8',
+    "FT8",
+    "FT4",
+    "FT2",
+    "CW",
+    "SSB",
+    "AM",
+    "FM",
+    "RTTY",
+    "PSK",
+    "JS8",
 )
 
 # FT8/FT4/FT2 channel centres (kHz) → mode.
 # A spot within ±1 kHz of a centre is assigned the corresponding mode.
 _FT_FREQS: tuple[tuple[float, str], ...] = (
     # FT8
-    (1840.0, 'FT8'), (3573.0, 'FT8'), (7074.0, 'FT8'), (10136.0, 'FT8'),
-    (14074.0, 'FT8'), (18100.0, 'FT8'), (21074.0, 'FT8'), (24915.0, 'FT8'),
-    (28074.0, 'FT8'), (50313.0, 'FT8'), (144174.0, 'FT8'),
+    (1840.0, "FT8"),
+    (3573.0, "FT8"),
+    (7074.0, "FT8"),
+    (10136.0, "FT8"),
+    (14074.0, "FT8"),
+    (18100.0, "FT8"),
+    (21074.0, "FT8"),
+    (24915.0, "FT8"),
+    (28074.0, "FT8"),
+    (50313.0, "FT8"),
+    (144174.0, "FT8"),
     # FT4
-    (3575.0, 'FT4'), (7047.5, 'FT4'), (10140.0, 'FT4'), (14080.0, 'FT4'),
-    (18104.0, 'FT4'), (21140.0, 'FT4'), (24919.0, 'FT4'), (28180.0, 'FT4'),
+    (3575.0, "FT4"),
+    (7047.5, "FT4"),
+    (10140.0, "FT4"),
+    (14080.0, "FT4"),
+    (18104.0, "FT4"),
+    (21140.0, "FT4"),
+    (24919.0, "FT4"),
+    (28180.0, "FT4"),
     # FT2
-    (3578.0, 'FT2'), (7062.0, 'FT2'), (10144.0, 'FT2'), (14084.0, 'FT2'),
-    (21144.0, 'FT2'), (28184.0, 'FT2'), (50316.0, 'FT2'), (144177.0, 'FT2'),
+    (3578.0, "FT2"),
+    (7062.0, "FT2"),
+    (10144.0, "FT2"),
+    (14084.0, "FT2"),
+    (21144.0, "FT2"),
+    (28184.0, "FT2"),
+    (50316.0, "FT2"),
+    (144177.0, "FT2"),
 )
 
 # CW sub-band segments (kHz) per IARU Region 2 band plan
@@ -141,11 +177,11 @@ def _infer_mode_from_freq(freq_khz: float) -> str:
             return mode
     for lo, hi in _CW_SEGMENTS:
         if lo <= freq_khz <= hi:
-            return 'CW'
+            return "CW"
     for lo, hi in _SSB_SEGMENTS:
         if lo <= freq_khz <= hi:
-            return 'SSB'
-    return 'CW'  # fallback for unrecognized sub-bands
+            return "SSB"
+    return "CW"  # fallback for unrecognized sub-bands
 
 
 def _strip_iac(data: bytes) -> bytes:
@@ -196,6 +232,9 @@ class TelnetCluster(threading.Thread):
         — implementations should use Qt signals, not direct widget updates.
     index : int, optional
         Connection index (1 or 2); used in log messages.
+    command : str, optional
+        Command sent to the node immediately after login (e.g. ``'sh/dx/50'``
+        to prime the table with recent spots).  Empty (default) sends nothing.
     """
 
     def __init__(
@@ -205,6 +244,7 @@ class TelnetCluster(threading.Thread):
         callsign: str,
         on_spot: SpotCallback,
         index: int = 1,
+        command: str = "",
     ) -> None:
         """Initialize the cluster thread without starting it.
 
@@ -220,13 +260,16 @@ class TelnetCluster(threading.Thread):
             Callback invoked for each parsed DX spot dict.
         index : int, optional
             Connection index (1 or 2).
+        command : str, optional
+            Command sent after login; empty sends nothing.
         """
-        super().__init__(daemon=True, name=f'telnet-cluster-{index}')
+        super().__init__(daemon=True, name=f"telnet-cluster-{index}")
         self._host = host
         self._port = port
         self._callsign = callsign.upper()
         self._on_spot = on_spot
         self._index = index
+        self._command = command.strip()
         self._stop_event = threading.Event()
         self._sock: socket.socket | None = None
         self._connected: bool = False
@@ -266,9 +309,7 @@ class TelnetCluster(threading.Thread):
                     )
             except Exception as exc:
                 if not self._stop_event.is_set():
-                    print(
-                        f"Telnet cluster {self._index}: unexpected error: {exc}"
-                    )
+                    print(f"Telnet cluster {self._index}: unexpected error: {exc}")
             if not self._stop_event.is_set():
                 self._stop_event.wait(delay)
                 delay = min(delay * 2, 60.0)
@@ -276,8 +317,7 @@ class TelnetCluster(threading.Thread):
     def _connect_and_run(self) -> None:
         # Open TCP connection, log in with callsign, and stream spot lines.
         print(
-            f"Telnet cluster {self._index}: "
-            f"connecting to {self._host}:{self._port}"
+            f"Telnet cluster {self._index}: " f"connecting to {self._host}:{self._port}"
         )
         with socket.create_connection((self._host, self._port), timeout=15.0) as sock:
             self._sock = sock
@@ -288,15 +328,25 @@ class TelnetCluster(threading.Thread):
                 )
                 self._connected = True
                 sock.settimeout(120.0)
-                sock.sendall((self._callsign + '\r\n').encode('ascii'))
-                buf = b''
+                sock.sendall((self._callsign + "\r\n").encode("ascii"))
+                if self._command:
+                    # Give the node a moment to process the login before the
+                    # priming command (e.g. sh/dx) so it is not swallowed.
+                    self._stop_event.wait(2.0)
+                    if not self._stop_event.is_set():
+                        print(
+                            f"Telnet cluster {self._index}: "
+                            f"sending command {self._command!r}"
+                        )
+                        sock.sendall((self._command + "\r\n").encode("ascii"))
+                buf = b""
                 while not self._stop_event.is_set():
                     try:
                         chunk = sock.recv(4096)
                     except socket.timeout:
                         # Send keepalive to detect stale connections
                         try:
-                            sock.sendall(b'\r\n')
+                            sock.sendall(b"\r\n")
                         except OSError:
                             break
                         continue
@@ -307,86 +357,88 @@ class TelnetCluster(threading.Thread):
                         )
                         break
                     buf += _strip_iac(chunk)
-                    while b'\n' in buf:
-                        line_bytes, buf = buf.split(b'\n', 1)
-                        line = line_bytes.decode('ascii', errors='replace').rstrip('\r')
+                    while b"\n" in buf:
+                        line_bytes, buf = buf.split(b"\n", 1)
+                        line = line_bytes.decode("ascii", errors="replace").rstrip("\r")
                         if line:
                             self._process_line(line, host_index=self._index)
             finally:
                 self._connected = False
                 self._sock = None
-    
 
-    
     def _process_line(self, line: str, host_index: str) -> None:
-        """ Parse one text line; invoke on_spot if it matches either spot format.
-         wb5vzl format: 
+        """Parse one text line; invoke on_spot if it matches either spot format.
+         wb5vzl format:
          DX de OE3KLU-#: 28187.90  OE3XAC         CW     5 dB  14 WPM  BEACON  0032Z
-        
+
          Parameters:
         ----------
         line : str
             One line of text received from the cluster.
         host : str
             Hostname or IP address of the cluster (for logging).
-        
+
         """
-        def _spot_basic(line:str) -> tuple[bool, str, str, str, str] | None:
+
+        def _spot_basic(line: str) -> tuple[bool, str, str, str, str] | None:
             m = _SPOT_RE.match(line)
             if m:
-                spotter  = m.group(1).upper()
+                spotter = m.group(1).upper()
                 freq_str = m.group(2)
-                dx_call  = m.group(3).upper().replace('.', '/')
-                comment  = (m.group(4) or '').strip()
+                dx_call = m.group(3).upper().replace(".", "/")
+                comment = (m.group(4) or "").strip()
                 return True, spotter, freq_str, dx_call, comment
             else:
-                return False, '', '', '', ''
-        
-        def _spot_alt(line:str) -> tuple[bool, str, str, str, str] | None:
+                return False, "", "", "", ""
+
+        def _spot_alt(line: str) -> tuple[bool, str, str, str, str] | None:
             m = _SPOT_RE_ALT.match(line)
             if m:
                 freq_str = m.group(1)
-                dx_call  = m.group(2).upper().replace('.', '/')
-                comment  = (m.group(3) or '').strip()
-                spotter  = m.group(4).upper()
+                dx_call = m.group(2).upper().replace(".", "/")
+                comment = (m.group(3) or "").strip()
+                spotter = m.group(4).upper()
                 return True, spotter, freq_str, dx_call, comment
             else:
-                return False, '', '', '', ''
-        
-        def _spot_rbn(line:str) -> tuple[bool, str, str, str, str] | None:
+                return False, "", "", "", ""
+
+        def _spot_rbn(line: str) -> tuple[bool, str, str, str, str] | None:
             m = _SPOT_RE_RBN.match(line)
             if m:
-                spotter  = m.group(1).upper()
+                spotter = m.group(1).upper()
                 freq_str = m.group(2)
-                dx_call  = m.group(3).upper().replace('.', '/')
-                comment  = (m.group(4) or '').strip()
+                dx_call = m.group(3).upper().replace(".", "/")
+                comment = (m.group(4) or "").strip()
                 return True, spotter, freq_str, dx_call, comment
             else:
-                return False, '', '', '', ''
+                return False, "", "", "", ""
 
-        def _spot_no_colon(line:str) -> tuple[bool, str, str, str, str] | None:
+        def _spot_no_colon(line: str) -> tuple[bool, str, str, str, str] | None:
             m = _SPOT_RE_NO_COLON.match(line)
             if m:
-                spotter  = m.group(1).upper()
+                spotter = m.group(1).upper()
                 freq_str = m.group(2)
-                dx_call  = m.group(3).upper().replace('.', '/')
-                comment  = (m.group(4) or '').strip()
+                dx_call = m.group(3).upper().replace(".", "/")
+                comment = (m.group(4) or "").strip()
                 return True, spotter, freq_str, dx_call, comment
             else:
-                return False, '', '', '', ''
+                return False, "", "", "", ""
 
-        parsed, spotter, freq_str, dx_call, comment = False, '', '', '', ''
+        parsed, spotter, freq_str, dx_call, comment = False, "", "", "", ""
         for spot_read in [_spot_basic, _spot_alt, _spot_rbn, _spot_no_colon]:
             parsed, spotter, freq_str, dx_call, comment = spot_read(line)
             if parsed:
                 break
         if not parsed:
-            print(f"Telnet cluster {host_index}: unrecognized line: {line!r}")
+            # Only warn about lines that look like spots but failed to parse;
+            # banners, help text, status lines, and prompts are ignored.
+            if _LOOKS_LIKE_SPOT_RE.match(line):
+                print(f"Telnet cluster {host_index}: unrecognized line: {line!r}")
             return
 
         # Strip trailing control characters some nodes append (e.g. terminal-bell
         # '\x07' on alert spots) so they don't leak into the displayed comment.
-        comment = re.sub(r'[\x00-\x1f\x7f]+', '', comment).strip()
+        comment = re.sub(r"[\x00-\x1f\x7f]+", "", comment).strip()
 
         try:
             freq_khz = float(freq_str)
@@ -394,10 +446,10 @@ class TelnetCluster(threading.Thread):
             return
 
         snr_m = _SNR_RE.search(comment)
-        rp = snr_m.group(1) if snr_m else '0'
+        rp = snr_m.group(1) if snr_m else "0"
 
         # Mode: keyword from comment first, then frequency-based inference
-        mode = ''
+        mode = ""
         comment_upper = comment.upper()
         for kw in _MODE_KEYWORDS:
             if kw in comment_upper:
@@ -410,14 +462,16 @@ class TelnetCluster(threading.Thread):
         #         f"Telnet cluster {host_index}: "
         #         f"{freq_khz:8.1f} kHz {dx_call:12s} {spotter:12s} {mode:3s} {rp} dB {comment}"
         #     )
-        self._on_spot({
-            'call':        dx_call,
-            'rc':          spotter,
-            'rl':          '',
-            'abs_freq_hz': int(freq_khz * 1000),
-            'rp':          rp,
-            'md':          mode,
-            'unix_time':   time.time(),
-            'comment':     comment,
-            'host_index':  host_index,
-        })
+        self._on_spot(
+            {
+                "call": dx_call,
+                "rc": spotter,
+                "rl": "",
+                "abs_freq_hz": int(freq_khz * 1000),
+                "rp": rp,
+                "md": mode,
+                "unix_time": time.time(),
+                "comment": comment,
+                "host_index": host_index,
+            }
+        )

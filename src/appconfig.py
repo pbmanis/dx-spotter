@@ -10,6 +10,7 @@ The configuration file is stored in a platform-appropriate location:
 The file is created automatically on first save.  All values are optional;
 missing keys fall back to the dataclass defaults.
 """
+
 from __future__ import annotations
 
 import os
@@ -137,6 +138,10 @@ class AppConfig:
         TCP port for DX Cluster node 1 (common value: ``7300``).
     telnet1_callsign : str
         Operator callsign sent as a login credential to cluster 1.
+    telnet1_command : str
+        Optional command sent to cluster 1 immediately after login (e.g.
+        ``'sh/dx/50'`` to prime the table with recent spots).  Empty to send
+        nothing.
     telnet2_enabled : bool
         Whether DX Cluster connection 2 is enabled on startup.
     telnet2_host : str
@@ -145,6 +150,9 @@ class AppConfig:
         TCP port for DX Cluster node 2 (common value: ``7300``).
     telnet2_callsign : str
         Operator callsign sent as a login credential to cluster 2.
+    telnet2_command : str
+        Optional command sent to cluster 2 immediately after login.  Empty to
+        send nothing.
     telnet3_enabled : bool
         Whether DX Cluster connection 3 is enabled on startup.
     telnet3_host : str
@@ -153,6 +161,9 @@ class AppConfig:
         TCP port for DX Cluster node 3 (common value: ``7300``).
     telnet3_callsign : str
         Operator callsign sent as a login credential to cluster 3.
+    telnet3_command : str
+        Optional command sent to cluster 3 immediately after login.  Empty to
+        send nothing.
     telnet4_enabled : bool
         Whether DX Cluster connection 4 is enabled on startup.
     telnet4_host : str
@@ -161,11 +172,15 @@ class AppConfig:
         TCP port for DX Cluster node 4 (common value: ``7300``).
     telnet4_callsign : str
         Operator callsign sent as a login credential to cluster 4.
+    telnet4_command : str
+        Optional command sent to cluster 4 immediately after login.  Empty to
+        send nothing.
     telnet_us_ca_spotters_only : bool
-        When ``True`` (default), DX Cluster spots are shown only when the
+        When ``True``, DX Cluster spots are shown only when the
         reporting/spotting station is located in the US or Canada (ADIF DXCC
         291 or 1).  Spots from all other spotters are silently discarded.
-        Set to ``False`` to show telnet-cluster spots from any spotter.
+        Defaults to ``False`` — telnet-cluster spots from any spotter are
+        shown unless the operator opts in via Settings → DX Cluster.
     pskr_enabled : bool
         Whether to connect to PSK Reporter via MQTT on startup.
     pskr_host : str
@@ -183,21 +198,21 @@ class AppConfig:
         Default is ``300`` (5 minutes).
     """
 
-    udp_address: str = '224.0.0.1'
+    udp_address: str = "224.0.0.1"
     udp_port: int = 2237
-    log_source: str = 'adif'
-    adif_path: str = ''
-    my_grid: str = 'FM05kw'
-    band: str = '10m'
-    mode: str = 'FC'
-    decode_filter: str = 'CQ'
+    log_source: str = "adif"
+    adif_path: str = ""
+    my_grid: str = "FM05kw"
+    band: str = "10m"
+    mode: str = "FC"
+    decode_filter: str = "CQ"
     max_range: int = 0
     max_spot_age: int = 30
     wsjt_enabled: bool = True
     wsjt_port: int = 2237
     wsjt_show_decodes: bool = True
-    criterion: str = 'mixed'
-    display_filter: str = 'all'
+    criterion: str = "mixed"
+    display_filter: str = "all"
     rx_grid_prefixes: list[str] = field(
         default_factory=lambda: ["FM", "FN", "FL", "EL", "EN", "EM"]
     )
@@ -205,36 +220,40 @@ class AppConfig:
     wsjt_no_spot_mins: int = 2
     rig_control_enabled: bool = False
     rig_track_band: bool = True
-    rig_backend: str = 'commander'
-    commander_host: str = '127.0.0.1'
+    rig_backend: str = "commander"
+    commander_host: str = "127.0.0.1"
     commander_port: int = 52002
     commander_timeout: float = 0.2
     commander_verify_delay: float = 0.75
-    rigctld_host: str = '127.0.0.1'
+    rigctld_host: str = "127.0.0.1"
     rigctld_port: int = 4532
     rigctld_timeout: float = 0.2
     rigctld_verify_delay: float = 0.75
     telnet1_enabled: bool = False
-    telnet1_host: str = ''
+    telnet1_host: str = ""
     telnet1_port: int = 7300
-    telnet1_callsign: str = ''
+    telnet1_callsign: str = ""
+    telnet1_command: str = ""
     telnet2_enabled: bool = False
-    telnet2_host: str = ''
+    telnet2_host: str = ""
     telnet2_port: int = 7300
-    telnet2_callsign: str = ''
+    telnet2_callsign: str = ""
+    telnet2_command: str = ""
     telnet3_enabled: bool = False
-    telnet3_host: str = ''
+    telnet3_host: str = ""
     telnet3_port: int = 7300
-    telnet3_callsign: str = ''
+    telnet3_callsign: str = ""
+    telnet3_command: str = ""
     telnet4_enabled: bool = False
-    telnet4_host: str = ''
+    telnet4_host: str = ""
     telnet4_port: int = 7300
-    telnet4_callsign: str = ''
-    telnet_us_ca_spotters_only: bool = True
+    telnet4_callsign: str = ""
+    telnet4_command: str = ""
+    telnet_us_ca_spotters_only: bool = False
     pskr_enabled: bool = True
-    pskr_host: str = 'mqtt.pskreporter.info'
+    pskr_host: str = "mqtt.pskreporter.info"
     pskr_port: int = 1883
-    pskr_service_name: str = 'PSK Reporter'
+    pskr_service_name: str = "PSK Reporter"
     pskr_reshow_secs: int = 300
 
 
@@ -249,14 +268,14 @@ def config_path() -> Path:
     Path
         Absolute path to ``config.toml`` inside the platform config directory.
     """
-    if sys.platform == 'darwin':
-        base = Path.home() / 'Library' / 'Application Support' / 'DXSpotter'
-    elif sys.platform == 'win32':
-        base = Path(os.environ.get('APPDATA', str(Path.home()))) / 'DXSpotter'
+    if sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support" / "DXSpotter"
+    elif sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", str(Path.home()))) / "DXSpotter"
     else:
-        xdg = os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config'))
-        base = Path(xdg) / 'dxspotter'
-    return base / 'config.toml'
+        xdg = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+        base = Path(xdg) / "dxspotter"
+    return base / "config.toml"
 
 
 def load_config() -> AppConfig:
@@ -275,7 +294,7 @@ def load_config() -> AppConfig:
     if not path.exists():
         return AppConfig()
     try:
-        with open(path, 'rb') as f:
+        with open(path, "rb") as f:
             data = tomllib.load(f)
     except Exception as e:
         print(f"Warning: could not read config {path}: {e}")
@@ -283,80 +302,88 @@ def load_config() -> AppConfig:
 
     cfg = AppConfig()
 
-    net = data.get('network', {})
-    cfg.udp_address = str(net.get('udp_address', cfg.udp_address))
-    cfg.udp_port = int(net.get('udp_port', cfg.udp_port))
+    net = data.get("network", {})
+    cfg.udp_address = str(net.get("udp_address", cfg.udp_address))
+    cfg.udp_port = int(net.get("udp_port", cfg.udp_port))
 
-    adif = data.get('adif', {})
-    cfg.log_source = str(adif.get('log_source', cfg.log_source))
-    cfg.adif_path = str(adif.get('path', cfg.adif_path))
+    adif = data.get("adif", {})
+    cfg.log_source = str(adif.get("log_source", cfg.log_source))
+    cfg.adif_path = str(adif.get("path", cfg.adif_path))
 
-    filt = data.get('filters', {})
-    cfg.my_grid = str(filt.get('my_grid', cfg.my_grid))
-    cfg.band = str(filt.get('band', cfg.band))
-    cfg.mode = str(filt.get('mode', cfg.mode))
-    cfg.decode_filter = str(filt.get('decode_filter', cfg.decode_filter))
-    cfg.max_range = int(filt.get('max_range', cfg.max_range))
-    cfg.max_spot_age = int(filt.get('max_spot_age', cfg.max_spot_age))
-    cfg.wsjt_enabled = bool(filt.get('wsjt_enabled', cfg.wsjt_enabled))
-    cfg.wsjt_port = int(filt.get('wsjt_port', cfg.wsjt_port))
-    cfg.wsjt_show_decodes = bool(
-        filt.get('wsjt_show_decodes', cfg.wsjt_show_decodes)
-    )
-    raw_prefixes = filt.get('rx_grid_prefixes', None)
+    filt = data.get("filters", {})
+    cfg.my_grid = str(filt.get("my_grid", cfg.my_grid))
+    cfg.band = str(filt.get("band", cfg.band))
+    cfg.mode = str(filt.get("mode", cfg.mode))
+    cfg.decode_filter = str(filt.get("decode_filter", cfg.decode_filter))
+    cfg.max_range = int(filt.get("max_range", cfg.max_range))
+    cfg.max_spot_age = int(filt.get("max_spot_age", cfg.max_spot_age))
+    cfg.wsjt_enabled = bool(filt.get("wsjt_enabled", cfg.wsjt_enabled))
+    cfg.wsjt_port = int(filt.get("wsjt_port", cfg.wsjt_port))
+    cfg.wsjt_show_decodes = bool(filt.get("wsjt_show_decodes", cfg.wsjt_show_decodes))
+    raw_prefixes = filt.get("rx_grid_prefixes", None)
     if isinstance(raw_prefixes, list):
         cfg.rx_grid_prefixes = [str(p).upper() for p in raw_prefixes]
-    cfg.wsjt_reshow_secs = int(filt.get('wsjt_reshow_secs', cfg.wsjt_reshow_secs))
-    cfg.wsjt_no_spot_mins = int(filt.get('wsjt_no_spot_mins', cfg.wsjt_no_spot_mins))
+    cfg.wsjt_reshow_secs = int(filt.get("wsjt_reshow_secs", cfg.wsjt_reshow_secs))
+    cfg.wsjt_no_spot_mins = int(filt.get("wsjt_no_spot_mins", cfg.wsjt_no_spot_mins))
 
-    ui = data.get('ui', {})
-    cfg.criterion = str(ui.get('criterion', cfg.criterion))
-    cfg.display_filter = str(ui.get('display_filter', cfg.display_filter))
+    ui = data.get("ui", {})
+    cfg.criterion = str(ui.get("criterion", cfg.criterion))
+    cfg.display_filter = str(ui.get("display_filter", cfg.display_filter))
 
-    rig = data.get('rig', {})
-    cfg.rig_control_enabled = bool(rig.get('rig_control_enabled', cfg.rig_control_enabled))
-    cfg.rig_track_band = bool(rig.get('rig_track_band', cfg.rig_track_band))
-    cfg.rig_backend = str(rig.get('rig_backend', cfg.rig_backend))
-    cfg.commander_host = str(rig.get('commander_host', cfg.commander_host))
-    cfg.commander_port = int(rig.get('commander_port', cfg.commander_port))
-    cfg.commander_timeout = float(rig.get('commander_timeout', cfg.commander_timeout))
-    cfg.commander_verify_delay = float(rig.get('commander_verify_delay', cfg.commander_verify_delay))
-    cfg.rigctld_host = str(rig.get('rigctld_host', cfg.rigctld_host))
-    cfg.rigctld_port = int(rig.get('rigctld_port', cfg.rigctld_port))
-    cfg.rigctld_timeout = float(rig.get('rigctld_timeout', cfg.rigctld_timeout))
-    cfg.rigctld_verify_delay = float(rig.get('rigctld_verify_delay', cfg.rigctld_verify_delay))
-
-    telnet = data.get('telnet', {})
-    t1 = telnet.get('cluster1', {})
-    cfg.telnet1_enabled = bool(t1.get('enabled', cfg.telnet1_enabled))
-    cfg.telnet1_host = str(t1.get('host', cfg.telnet1_host))
-    cfg.telnet1_port = int(t1.get('port', cfg.telnet1_port))
-    cfg.telnet1_callsign = str(t1.get('callsign', cfg.telnet1_callsign))
-    t2 = telnet.get('cluster2', {})
-    cfg.telnet2_enabled = bool(t2.get('enabled', cfg.telnet2_enabled))
-    cfg.telnet2_host = str(t2.get('host', cfg.telnet2_host))
-    cfg.telnet2_port = int(t2.get('port', cfg.telnet2_port))
-    cfg.telnet2_callsign = str(t2.get('callsign', cfg.telnet2_callsign))
-    t3 = telnet.get('cluster3', {})
-    cfg.telnet3_enabled = bool(t3.get('enabled', cfg.telnet3_enabled))
-    cfg.telnet3_host = str(t3.get('host', cfg.telnet3_host))
-    cfg.telnet3_port = int(t3.get('port', cfg.telnet3_port))
-    cfg.telnet3_callsign = str(t3.get('callsign', cfg.telnet3_callsign))
-    t4 = telnet.get('cluster4', {})
-    cfg.telnet4_enabled = bool(t4.get('enabled', cfg.telnet4_enabled))
-    cfg.telnet4_host = str(t4.get('host', cfg.telnet4_host))
-    cfg.telnet4_port = int(t4.get('port', cfg.telnet4_port))
-    cfg.telnet4_callsign = str(t4.get('callsign', cfg.telnet4_callsign))
-    cfg.telnet_us_ca_spotters_only = bool(
-        telnet.get('us_ca_spotters_only', cfg.telnet_us_ca_spotters_only)
+    rig = data.get("rig", {})
+    cfg.rig_control_enabled = bool(
+        rig.get("rig_control_enabled", cfg.rig_control_enabled)
+    )
+    cfg.rig_track_band = bool(rig.get("rig_track_band", cfg.rig_track_band))
+    cfg.rig_backend = str(rig.get("rig_backend", cfg.rig_backend))
+    cfg.commander_host = str(rig.get("commander_host", cfg.commander_host))
+    cfg.commander_port = int(rig.get("commander_port", cfg.commander_port))
+    cfg.commander_timeout = float(rig.get("commander_timeout", cfg.commander_timeout))
+    cfg.commander_verify_delay = float(
+        rig.get("commander_verify_delay", cfg.commander_verify_delay)
+    )
+    cfg.rigctld_host = str(rig.get("rigctld_host", cfg.rigctld_host))
+    cfg.rigctld_port = int(rig.get("rigctld_port", cfg.rigctld_port))
+    cfg.rigctld_timeout = float(rig.get("rigctld_timeout", cfg.rigctld_timeout))
+    cfg.rigctld_verify_delay = float(
+        rig.get("rigctld_verify_delay", cfg.rigctld_verify_delay)
     )
 
-    pskr = data.get('pskr', {})
-    cfg.pskr_enabled = bool(pskr.get('enabled', cfg.pskr_enabled))
-    cfg.pskr_host = str(pskr.get('host', cfg.pskr_host))
-    cfg.pskr_port = int(pskr.get('port', cfg.pskr_port))
-    cfg.pskr_service_name = str(pskr.get('service_name', cfg.pskr_service_name))
-    cfg.pskr_reshow_secs = int(pskr.get('reshow_secs', cfg.pskr_reshow_secs))
+    telnet = data.get("telnet", {})
+    t1 = telnet.get("cluster1", {})
+    cfg.telnet1_enabled = bool(t1.get("enabled", cfg.telnet1_enabled))
+    cfg.telnet1_host = str(t1.get("host", cfg.telnet1_host))
+    cfg.telnet1_port = int(t1.get("port", cfg.telnet1_port))
+    cfg.telnet1_callsign = str(t1.get("callsign", cfg.telnet1_callsign))
+    cfg.telnet1_command = str(t1.get("command", cfg.telnet1_command))
+    t2 = telnet.get("cluster2", {})
+    cfg.telnet2_enabled = bool(t2.get("enabled", cfg.telnet2_enabled))
+    cfg.telnet2_host = str(t2.get("host", cfg.telnet2_host))
+    cfg.telnet2_port = int(t2.get("port", cfg.telnet2_port))
+    cfg.telnet2_callsign = str(t2.get("callsign", cfg.telnet2_callsign))
+    cfg.telnet2_command = str(t2.get("command", cfg.telnet2_command))
+    t3 = telnet.get("cluster3", {})
+    cfg.telnet3_enabled = bool(t3.get("enabled", cfg.telnet3_enabled))
+    cfg.telnet3_host = str(t3.get("host", cfg.telnet3_host))
+    cfg.telnet3_port = int(t3.get("port", cfg.telnet3_port))
+    cfg.telnet3_callsign = str(t3.get("callsign", cfg.telnet3_callsign))
+    cfg.telnet3_command = str(t3.get("command", cfg.telnet3_command))
+    t4 = telnet.get("cluster4", {})
+    cfg.telnet4_enabled = bool(t4.get("enabled", cfg.telnet4_enabled))
+    cfg.telnet4_host = str(t4.get("host", cfg.telnet4_host))
+    cfg.telnet4_port = int(t4.get("port", cfg.telnet4_port))
+    cfg.telnet4_callsign = str(t4.get("callsign", cfg.telnet4_callsign))
+    cfg.telnet4_command = str(t4.get("command", cfg.telnet4_command))
+    cfg.telnet_us_ca_spotters_only = bool(
+        telnet.get("us_ca_spotters_only", cfg.telnet_us_ca_spotters_only)
+    )
+
+    pskr = data.get("pskr", {})
+    cfg.pskr_enabled = bool(pskr.get("enabled", cfg.pskr_enabled))
+    cfg.pskr_host = str(pskr.get("host", cfg.pskr_host))
+    cfg.pskr_port = int(pskr.get("port", cfg.pskr_port))
+    cfg.pskr_service_name = str(pskr.get("service_name", cfg.pskr_service_name))
+    cfg.pskr_reshow_secs = int(pskr.get("reshow_secs", cfg.pskr_reshow_secs))
 
     return cfg
 
@@ -425,24 +452,28 @@ enabled  = {"true" if cfg.telnet1_enabled else "false"}
 host     = "{cfg.telnet1_host}"
 port     = {cfg.telnet1_port}
 callsign = "{cfg.telnet1_callsign}"
+command  = "{cfg.telnet1_command}"
 
 [telnet.cluster2]
 enabled  = {"true" if cfg.telnet2_enabled else "false"}
 host     = "{cfg.telnet2_host}"
 port     = {cfg.telnet2_port}
 callsign = "{cfg.telnet2_callsign}"
+command  = "{cfg.telnet2_command}"
 
 [telnet.cluster3]
 enabled  = {"true" if cfg.telnet3_enabled else "false"}
 host     = "{cfg.telnet3_host}"
 port     = {cfg.telnet3_port}
 callsign = "{cfg.telnet3_callsign}"
+command  = "{cfg.telnet3_command}"
 
 [telnet.cluster4]
 enabled  = {"true" if cfg.telnet4_enabled else "false"}
 host     = "{cfg.telnet4_host}"
 port     = {cfg.telnet4_port}
 callsign = "{cfg.telnet4_callsign}"
+command  = "{cfg.telnet4_command}"
 
 [pskr]
 enabled      = {"true" if cfg.pskr_enabled else "false"}
@@ -451,4 +482,4 @@ port         = {cfg.pskr_port}
 service_name = "{cfg.pskr_service_name}"
 reshow_secs  = {cfg.pskr_reshow_secs}
 """
-    path.write_text(content, encoding='utf-8')
+    path.write_text(content, encoding="utf-8")

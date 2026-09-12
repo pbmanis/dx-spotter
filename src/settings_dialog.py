@@ -7,16 +7,33 @@ and the WSJT-X UDP network settings.
 Result values are exposed as read-only properties and consumed by
 :meth:`~dxspotter.DXSpotter._open_settings` after the dialog is accepted.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QApplication, QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
-    QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QMessageBox, QPushButton, QRadioButton, QSpinBox, QTabWidget,
-    QVBoxLayout, QButtonGroup, QWidget,
+    QApplication,
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QRadioButton,
+    QSpinBox,
+    QTabWidget,
+    QVBoxLayout,
+    QButtonGroup,
+    QWidget,
 )
 
 from adif_log import RUMLOGNG_DB_PATH
@@ -42,46 +59,55 @@ class SettingsDialog(QDialog):
     #: Emitted when the user requests an FCC database rebuild.
     fcc_update_requested = pyqtSignal()
 
-    def __init__(self, log_source: str, adif_path: str,
-                 udp_address: str, udp_port: int,
-                 my_grid: str = 'FM05kw',
-                 rx_grid_prefixes: list[str] | None = None,
-                 wsjt_reshow_secs: int = 300,
-                 wsjt_no_spot_mins: int = 2,
-                 wsjt_show_decodes: bool = True,
-                 rig_control_enabled: bool = False,
-                 rig_track_band: bool = True,
-                 rig_backend: str = 'commander',
-                 commander_port: int = 52002,
-                 commander_timeout: float = 0.2,
-                 commander_verify_delay: float = 0.75,
-                 rigctld_port: int = 4532,
-                 rigctld_timeout: float = 0.2,
-                 rigctld_verify_delay: float = 0.75,
-                 telnet1_enabled: bool = False,
-                 telnet1_host: str = '',
-                 telnet1_port: int = 7300,
-                 telnet1_callsign: str = '',
-                 telnet2_enabled: bool = False,
-                 telnet2_host: str = '',
-                 telnet2_port: int = 7300,
-                 telnet2_callsign: str = '',
-                 telnet3_enabled: bool = False,
-                 telnet3_host: str = '',
-                 telnet3_port: int = 7300,
-                 telnet3_callsign: str = '',
-                 telnet4_enabled: bool = False,
-                 telnet4_host: str = '',
-                 telnet4_port: int = 7300,
-                 telnet4_callsign: str = '',
-                 telnet_us_ca_spotters_only: bool = True,
-                 pskr_enabled: bool = True,
-                 pskr_host: str = 'mqtt.pskreporter.info',
-                 pskr_port: int = 1883,
-                 pskr_service_name: str = 'PSK Reporter',
-                 pskr_reshow_secs: int = 300,
-                 cty_path: str = '',
-                 parent=None) -> None:
+    def __init__(
+        self,
+        log_source: str,
+        adif_path: str,
+        udp_address: str,
+        udp_port: int,
+        my_grid: str = "FM05kw",
+        rx_grid_prefixes: list[str] | None = None,
+        wsjt_reshow_secs: int = 300,
+        wsjt_no_spot_mins: int = 2,
+        wsjt_show_decodes: bool = True,
+        rig_control_enabled: bool = False,
+        rig_track_band: bool = True,
+        rig_backend: str = "commander",
+        commander_port: int = 52002,
+        commander_timeout: float = 0.2,
+        commander_verify_delay: float = 0.75,
+        rigctld_port: int = 4532,
+        rigctld_timeout: float = 0.2,
+        rigctld_verify_delay: float = 0.75,
+        telnet1_enabled: bool = False,
+        telnet1_host: str = "",
+        telnet1_port: int = 7300,
+        telnet1_callsign: str = "",
+        telnet1_command: str = "",
+        telnet2_enabled: bool = False,
+        telnet2_host: str = "",
+        telnet2_port: int = 7300,
+        telnet2_callsign: str = "",
+        telnet2_command: str = "",
+        telnet3_enabled: bool = False,
+        telnet3_host: str = "",
+        telnet3_port: int = 7300,
+        telnet3_callsign: str = "",
+        telnet3_command: str = "",
+        telnet4_enabled: bool = False,
+        telnet4_host: str = "",
+        telnet4_port: int = 7300,
+        telnet4_callsign: str = "",
+        telnet4_command: str = "",
+        telnet_us_ca_spotters_only: bool = False,
+        pskr_enabled: bool = True,
+        pskr_host: str = "mqtt.pskreporter.info",
+        pskr_port: int = 1883,
+        pskr_service_name: str = "PSK Reporter",
+        pskr_reshow_secs: int = 300,
+        cty_path: str = "",
+        parent=None,
+    ) -> None:
         """Build and populate the settings dialog.
 
         Parameters
@@ -143,6 +169,9 @@ class SettingsDialog(QDialog):
             TCP port for cluster 1.  Default ``7300``.
         telnet1_callsign : str, optional
             Login callsign for cluster 1.  Default ``''``.
+        telnet1_command : str, optional
+            Command sent to cluster 1 after login (e.g. ``'sh/dx/50'``).
+            Default ``''``.
         telnet2_enabled : bool, optional
             Whether DX Cluster 2 is enabled.  Default ``False``.
         telnet2_host : str, optional
@@ -151,6 +180,8 @@ class SettingsDialog(QDialog):
             TCP port for cluster 2.  Default ``7300``.
         telnet2_callsign : str, optional
             Login callsign for cluster 2.  Default ``''``.
+        telnet2_command : str, optional
+            Command sent to cluster 2 after login.  Default ``''``.
         telnet3_enabled : bool, optional
             Whether DX Cluster 3 is enabled.  Default ``False``.
         telnet3_host : str, optional
@@ -159,6 +190,8 @@ class SettingsDialog(QDialog):
             TCP port for cluster 3.  Default ``7300``.
         telnet3_callsign : str, optional
             Login callsign for cluster 3.  Default ``''``.
+        telnet3_command : str, optional
+            Command sent to cluster 3 after login.  Default ``''``.
         telnet4_enabled : bool, optional
             Whether DX Cluster 4 is enabled.  Default ``False``.
         telnet4_host : str, optional
@@ -167,9 +200,11 @@ class SettingsDialog(QDialog):
             TCP port for cluster 4.  Default ``7300``.
         telnet4_callsign : str, optional
             Login callsign for cluster 4.  Default ``''``.
+        telnet4_command : str, optional
+            Command sent to cluster 4 after login.  Default ``''``.
         telnet_us_ca_spotters_only : bool, optional
             Whether to discard DX Cluster spots whose reporting station is
-            outside the US/Canada.  Default ``True``.
+            outside the US/Canada.  Default ``False``.
         pskr_enabled : bool, optional
             Whether the PSK Reporter MQTT connection is enabled.  Default ``True``.
         pskr_host : str, optional
@@ -201,10 +236,10 @@ class SettingsDialog(QDialog):
         src_layout = QVBoxLayout(src_box)
 
         self._src_group = QButtonGroup(self)
-        self._rb_adif   = QRadioButton("ADIF file")
-        self._rb_rum    = QRadioButton("RumLogNG (CloudKit database)")
+        self._rb_adif = QRadioButton("ADIF file")
+        self._rb_rum = QRadioButton("RumLogNG (CloudKit database)")
         self._src_group.addButton(self._rb_adif, 0)
-        self._src_group.addButton(self._rb_rum,  1)
+        self._src_group.addButton(self._rb_rum, 1)
         src_layout.addWidget(self._rb_adif)
         src_layout.addWidget(self._rb_rum)
 
@@ -228,23 +263,21 @@ class SettingsDialog(QDialog):
         src_layout.addWidget(self._adif_row_widget)
 
         # RumLogNG path info label (shown only when RumLogNG selected)
-        self._rum_info = QLabel(
-            f"Database path (read-only):\n{RUMLOGNG_DB_PATH}"
-        )
+        self._rum_info = QLabel(f"Database path (read-only):\n{RUMLOGNG_DB_PATH}")
         self._rum_info.setWordWrap(True)
         self._rum_info.setStyleSheet("color: #aaaaaa; font-size: 10pt;")
         src_layout.addWidget(self._rum_info)
 
         # set initial state
-        if log_source == 'rumlogng' and rumlogng_exists:
+        if log_source == "rumlogng" and rumlogng_exists:
             self._rb_rum.setChecked(True)
         else:
             self._rb_adif.setChecked(True)
         self._update_log_source_ui()
 
-        self._src_group.idToggled.connect(lambda _id, checked: (
-            self._update_log_source_ui() if checked else None
-        ))
+        self._src_group.idToggled.connect(
+            lambda _id, checked: (self._update_log_source_ui() if checked else None)
+        )
 
         # ── Station ───────────────────────────────────────────────────────────
         station_box = QGroupBox("Station")
@@ -262,9 +295,15 @@ class SettingsDialog(QDialog):
         self._port_spin.setRange(1024, 65535)
         self._port_spin.setValue(udp_port)
 
-        _prefixes = rx_grid_prefixes if rx_grid_prefixes is not None else ["FM", "FN", "FL", "EL", "EN", "EM"]
+        _prefixes = (
+            rx_grid_prefixes
+            if rx_grid_prefixes is not None
+            else ["FM", "FN", "FL", "EL", "EN", "EM"]
+        )
         self._rx_grid_edit = QLineEdit(" ".join(_prefixes))
-        self._rx_grid_edit.setPlaceholderText("e.g. FM FN FL  (blank = accept all reporters)")
+        self._rx_grid_edit.setPlaceholderText(
+            "e.g. FM FN FL  (blank = accept all reporters)"
+        )
 
         self._reshow_spin = QSpinBox()
         self._reshow_spin.setRange(0, 3600)
@@ -309,7 +348,7 @@ class SettingsDialog(QDialog):
         self._rb_backend_rigctld = QRadioButton("rigctld (Hamlib / K2K3Controller)")
         self._backend_group.addButton(self._rb_backend_commander, 0)
         self._backend_group.addButton(self._rb_backend_rigctld, 1)
-        if rig_backend == 'rigctld':
+        if rig_backend == "rigctld":
             self._rb_backend_rigctld.setChecked(True)
         else:
             self._rb_backend_commander.setChecked(True)
@@ -377,15 +416,15 @@ class SettingsDialog(QDialog):
         cmd_layout.addWidget(self._rigctld_settings_box)
 
         self._update_rig_backend_ui()
-        self._backend_group.idToggled.connect(lambda _id, checked: (
-            self._update_rig_backend_ui() if checked else None
-        ))
+        self._backend_group.idToggled.connect(
+            lambda _id, checked: (self._update_rig_backend_ui() if checked else None)
+        )
 
         cmd_note = QLabel(
             "Only one backend talks to the rig at a time — pick the one "
             "actually connected to it.  Verify delay must cover at least one "
-            "backend poll cycle (~0.7 s minimum).  Uncheck \"Track Band "
-            "filter\" if the backend reports a stale or incorrect VFO "
+            'backend poll cycle (~0.7 s minimum).  Uncheck "Track Band '
+            'filter" if the backend reports a stale or incorrect VFO '
             "frequency — it was overriding manual band selection."
         )
         cmd_note.setWordWrap(True)
@@ -440,9 +479,14 @@ class SettingsDialog(QDialog):
         telnet_layout = QGridLayout(telnet_box)
 
         def _build_cluster_box(
-            title: str, enabled: bool, host: str, port: int, callsign: str,
+            title: str,
+            enabled: bool,
+            host: str,
+            port: int,
+            callsign: str,
+            command: str,
             host_placeholder: str,
-        ) -> tuple[QGroupBox, QCheckBox, QLineEdit, QSpinBox, QLineEdit]:
+        ) -> tuple[QGroupBox, QCheckBox, QLineEdit, QSpinBox, QLineEdit, QLineEdit]:
             # Build one "Cluster N" group box; returns the box plus its widgets.
             box = QGroupBox(title)
             form = QFormLayout(box)
@@ -455,27 +499,78 @@ class SettingsDialog(QDialog):
             port_spin.setValue(port)
             call_edit = QLineEdit(callsign.upper())
             call_edit.setPlaceholderText("Your callsign")
+            cmd_edit = QLineEdit(command)
+            cmd_edit.setPlaceholderText("e.g. sh/dx/50 (optional)")
             form.addRow("", enabled_cb)
             form.addRow("Host:", host_edit)
             form.addRow("Port:", port_spin)
             form.addRow("Callsign:", call_edit)
-            return box, enabled_cb, host_edit, port_spin, call_edit
+            form.addRow("Login cmd:", cmd_edit)
+            return box, enabled_cb, host_edit, port_spin, call_edit, cmd_edit
 
-        c1_box, self._t1_enabled, self._t1_host, self._t1_port, self._t1_call = (
-            _build_cluster_box("Cluster 1", telnet1_enabled, telnet1_host,
-                               telnet1_port, telnet1_callsign, "e.g. dxc.k0xm.net")
+        (
+            c1_box,
+            self._t1_enabled,
+            self._t1_host,
+            self._t1_port,
+            self._t1_call,
+            self._t1_cmd,
+        ) = _build_cluster_box(
+            "Cluster 1",
+            telnet1_enabled,
+            telnet1_host,
+            telnet1_port,
+            telnet1_callsign,
+            telnet1_command,
+            "e.g. dxc.k0xm.net",
         )
-        c2_box, self._t2_enabled, self._t2_host, self._t2_port, self._t2_call = (
-            _build_cluster_box("Cluster 2", telnet2_enabled, telnet2_host,
-                               telnet2_port, telnet2_callsign, "e.g. dxc.w3lpl.net")
+        (
+            c2_box,
+            self._t2_enabled,
+            self._t2_host,
+            self._t2_port,
+            self._t2_call,
+            self._t2_cmd,
+        ) = _build_cluster_box(
+            "Cluster 2",
+            telnet2_enabled,
+            telnet2_host,
+            telnet2_port,
+            telnet2_callsign,
+            telnet2_command,
+            "e.g. dxc.w3lpl.net",
         )
-        c3_box, self._t3_enabled, self._t3_host, self._t3_port, self._t3_call = (
-            _build_cluster_box("Cluster 3", telnet3_enabled, telnet3_host,
-                               telnet3_port, telnet3_callsign, "e.g. dxc.ve7cc.net")
+        (
+            c3_box,
+            self._t3_enabled,
+            self._t3_host,
+            self._t3_port,
+            self._t3_call,
+            self._t3_cmd,
+        ) = _build_cluster_box(
+            "Cluster 3",
+            telnet3_enabled,
+            telnet3_host,
+            telnet3_port,
+            telnet3_callsign,
+            telnet3_command,
+            "e.g. dxc.ve7cc.net",
         )
-        c4_box, self._t4_enabled, self._t4_host, self._t4_port, self._t4_call = (
-            _build_cluster_box("Cluster 4", telnet4_enabled, telnet4_host,
-                               telnet4_port, telnet4_callsign, "e.g. dxc.nc7j.com")
+        (
+            c4_box,
+            self._t4_enabled,
+            self._t4_host,
+            self._t4_port,
+            self._t4_call,
+            self._t4_cmd,
+        ) = _build_cluster_box(
+            "Cluster 4",
+            telnet4_enabled,
+            telnet4_host,
+            telnet4_port,
+            telnet4_callsign,
+            telnet4_command,
+            "e.g. dxc.nc7j.com",
         )
 
         # 2x2 grid: cluster 1/2 on the top row, 3/4 on the bottom row.
@@ -583,24 +678,30 @@ class SettingsDialog(QDialog):
 
     def _browse_adif(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select ADIF Log File", self._adif_edit.text(),
-            "ADIF Files (*.adif *.adi);;All Files (*)"
+            self,
+            "Select ADIF Log File",
+            self._adif_edit.text(),
+            "ADIF Files (*.adif *.adi);;All Files (*)",
         )
         if path:
             self._adif_edit.setText(path)
 
     def _update_cty_label(self) -> None:
         import cty_cache as _cty
+
         age = _cty.cty_age_days()
         if age is None:
             text = "Not downloaded yet."
         else:
             days = int(age)
-            text = f"Age: {days} day{'s' if days != 1 else ''}  —  {_cty.cty_plist_path()}"
+            text = (
+                f"Age: {days} day{'s' if days != 1 else ''}  —  {_cty.cty_plist_path()}"
+            )
         self._cty_status_label.setText(text)
 
     def _update_fcc_label(self) -> None:
         import fcc_db as _fcc
+
         age = _fcc.fcc_db_age_days()
         count = _fcc.fcc_db_entry_count()
         if age is None:
@@ -621,6 +722,7 @@ class SettingsDialog(QDialog):
     def _refresh_cty(self) -> None:
         from PyQt6.QtCore import Qt
         import cty_cache as _cty
+
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             _cty.download_cty()
@@ -641,7 +743,7 @@ class SettingsDialog(QDialog):
     @property
     def log_source(self) -> str:
         """Selected log source: ``'rumlogng'`` or ``'adif'``."""
-        return 'rumlogng' if self._rb_rum.isChecked() else 'adif'
+        return "rumlogng" if self._rb_rum.isChecked() else "adif"
 
     @property
     def adif_path(self) -> str:
@@ -694,7 +796,7 @@ class SettingsDialog(QDialog):
     @property
     def rig_backend(self) -> str:
         """Selected rig-control backend: ``'commander'`` or ``'rigctld'``."""
-        return 'rigctld' if self._rb_backend_rigctld.isChecked() else 'commander'
+        return "rigctld" if self._rb_backend_rigctld.isChecked() else "commander"
 
     @property
     def commander_port(self) -> int:
@@ -747,6 +849,11 @@ class SettingsDialog(QDialog):
         return self._t1_call.text().strip().upper()
 
     @property
+    def telnet1_command(self) -> str:
+        """Optional command sent to DX Cluster 1 after login (stripped)."""
+        return self._t1_cmd.text().strip()
+
+    @property
     def telnet2_enabled(self) -> bool:
         """Whether DX Cluster 2 is enabled."""
         return self._t2_enabled.isChecked()
@@ -765,6 +872,11 @@ class SettingsDialog(QDialog):
     def telnet2_callsign(self) -> str:
         """Login callsign for DX Cluster 2 (stripped, upper-case)."""
         return self._t2_call.text().strip().upper()
+
+    @property
+    def telnet2_command(self) -> str:
+        """Optional command sent to DX Cluster 2 after login (stripped)."""
+        return self._t2_cmd.text().strip()
 
     @property
     def telnet3_enabled(self) -> bool:
@@ -787,6 +899,11 @@ class SettingsDialog(QDialog):
         return self._t3_call.text().strip().upper()
 
     @property
+    def telnet3_command(self) -> str:
+        """Optional command sent to DX Cluster 3 after login (stripped)."""
+        return self._t3_cmd.text().strip()
+
+    @property
     def telnet4_enabled(self) -> bool:
         """Whether DX Cluster 4 is enabled."""
         return self._t4_enabled.isChecked()
@@ -805,6 +922,11 @@ class SettingsDialog(QDialog):
     def telnet4_callsign(self) -> str:
         """Login callsign for DX Cluster 4 (stripped, upper-case)."""
         return self._t4_call.text().strip().upper()
+
+    @property
+    def telnet4_command(self) -> str:
+        """Optional command sent to DX Cluster 4 after login (stripped)."""
+        return self._t4_cmd.text().strip()
 
     @property
     def telnet_us_ca_spotters_only(self) -> bool:
