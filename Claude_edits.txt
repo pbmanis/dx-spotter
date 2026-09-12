@@ -1712,3 +1712,166 @@ FILES CHANGED (this session — complete list)
   src/settings_dialog.py  — Tasks 1, 2, 3 (checkboxes, Communication tab
                              + backend selector/groups)
   src/rigctld_client.py   — NEW FILE (Task 3)
+
+═════════════════════════════════════════════════════════════════════════════
+
+═════════════════════════════════════════════════════════════════════════════
+Date: 2026-09-12
+Model: claude-opus-4-8
+
+Title: telnet spotter. Complaint was that DX cluster spots "were not getting
+parsed correctly." Live-probed the three enabled clusters and proved parsing
+was fine — the real culprits were a country-lookup crash and an over-aggressive
+filter. Then fixed the noise, added an opt-in per-cluster login command to
+prime slow nodes, and backfilled tests.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 1 — Diagnose "clusters not parsing"
+─────────────────────────────────────────────────────────────────────────────
+
+Method: wrote a throwaway probe that connected to the enabled clusters
+(dxc.w3lpl.net:7373, telnet.reversebeacon.net:7000, K1RFI.com:7300 — all as
+NC3G), captured every raw line AND the parse outcome, so parse failures could
+be told apart from filter drops.
+
+Finding: PARSING WORKS. w3lpl parsed 5/5 spot lines, RBN 179/183; the "unparsed"
+counts were login banners, not spots. The pipeline was being starved by two
+things downstream of the parser:
+
+  ① cty.plist parse crash (root cause).  country-files.com renamed DXCC entity
+     409 "Cape Verde" -> "Cabo Verde"; pyhamtools 0.12.0's
+     countryfilemapping.json only knows "Cape Verde", so
+     LookupLib(lookuptype="countryfile") raises KeyError: 'Cabo Verde' while
+     parsing.  No try/except at the build site (dxspotter.py:1125) => the app
+     CRASHES at startup once the 30-day cty cache expires and re-downloads.
+     If it had degraded to cinfo=None instead, get_dxcc() returns -1 for every
+     call, which silently breaks award coloring AND (when on) the us/ca filter.
+     Checked all 345 country names in the current plist — "Cabo Verde" is the
+     ONLY mismatch.
+
+  ② telnet_us_ca_spotters_only = true (by design, but drops almost everything).
+     _on_telnet_spot drops any spot whose SPOTTER isn't DXCC 291 (US) or 1
+     (Canada). On RBN / world clusters the spotters are global, so nearly all
+     spots vanish. Combined with ①, 100% of telnet spots dropped.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 2 — Fix the crash + flip the filter default (user: do both together)
+─────────────────────────────────────────────────────────────────────────────
+
+Cabo Verde fix — src/cty_cache.py:
+  - New _COUNTRY_NAME_FIXES = {"Cabo Verde": "Cape Verde"} and _sanitize_cty(),
+    which rewrites <string>…</string> country names in the cached plist.
+  - Applied in download_cty() (so every download + manual "Refresh CTY…" is
+    clean) and in ensure_cty() for the fresh-cache and bundled-seed branches
+    (so an already-broken on-disk file is repaired on next start). Idempotent.
+
+Crash guard — src/dxspotter.py:
+  - Wrapped the LookupLib/Callinfo build (startup) AND _reinit_cinfo (manual
+    refresh) in try/except: on failure prints a clear message pointing to
+    Settings -> "Refresh CTY…" and sets cinfo=None instead of crashing.
+    Guarded the is_valid_callsign check against cinfo=None.
+
+Filter default OFF (user chose "keep, but make it a real toggle, default OFF"):
+  - appconfig.py: telnet_us_ca_spotters_only default True -> False (+ docstring).
+  - settings_dialog.py: same default param + docstring. (The toggle already
+    updates the LIVE self._config via cfg=self._config in _open_settings, so it
+    works at runtime — confirmed, no code change needed there.)
+  - Flipped the user's saved config.toml us_ca_spotters_only = false and
+    re-sanitized their cached cty.plist (the probe had triggered the broken
+    re-download).
+
+Verified live: app started (no crash), all 3 clusters connected, no more
+"spotter outside US/Canada" drops. With -b 20m forced, accepted spots flowed
+(YO4BEX/Romania, EA7WA/Spain, DK5DQ/Germany) — all with non-US spotters the old
+filter would have dropped. Range filter still fired correctly (AK6RI-1 out of
+range), proving cinfo/FCC lookups work. D4L now resolves to 409.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 3 — Suppress banner-line log noise
+─────────────────────────────────────────────────────────────────────────────
+
+src/telnet_cluster.py _process_line printed "unrecognized line: …" for EVERY
+non-matching line, flooding the console with login banners/help/prompts on each
+connect (~70+ lines). Added _LOOKS_LIKE_SPOT_RE (line starts with "DX de" or a
+bare frequency) and now only warn when a line looks like a spot but failed to
+parse — genuine parser gaps stay visible; banners are silent.
+
+Verified: live run showed 0 banner-spam lines while 48 spots flowed; unit-level
+check confirmed a malformed "DX de …" line still warns.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 4 — K1RFI "no spots" + per-cluster login command (sh/dx priming)
+─────────────────────────────────────────────────────────────────────────────
+
+Premise was false: focused probes showed K1RFI/NN1D DOES feed live — it's just
+a low-rate filtered feed for this login (produced accepted spot W4IU on 20m in
+the real run; 3 live "DX de" spots over 50s in a probe). Short windows looked
+empty. So no fix was needed for correctness.
+
+But the user's "nudge with sh/dx" idea is a real UX win (populate the table
+immediately on connect instead of waiting for the slow feed), so — user chose
+"Add per-cluster login command" — implemented an optional command sent after
+login:
+  - telnet_cluster.py: TelnetCluster gains command: str = ''; sent ~2s after
+    login (wait via _stop_event so it aborts cleanly on stop).
+  - appconfig.py: telnet1_command … telnet4_command fields + load/save
+    (command = "…" under each [telnet.clusterN]), default ''.
+  - settings_dialog.py: "Login cmd:" field on each cluster box (placeholder
+    "e.g. sh/dx/50") + read-back property; threaded through __init__.
+  - dxspotter.py: passed command= at both startup and settings-reconnect
+    construction sites; command change now triggers a reconnect.
+  - Set the user's config.toml cluster4 (K1RFI) command = "sh/dx/50".
+
+Verified live: on launch cluster 4 sent 'sh/dx/50' and immediately produced 7
+accepted 20m snapshot spots (PY2KJ, DF0HQ, VE9CF, W9AV, 4L5O, HA3DX, EG26PDA),
+0 banner spam.
+
+CAVEAT recorded for the user: sh/dx snapshot spots are timestamped with
+time.time() (the parser doesn't read the spot's own timestamp), so a spot from
+a few minutes ago shows as "now" — fine for priming, and why sh/dx is left off
+the already-streaming nodes (w3lpl/RBN).
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 5 — Tests + formatting
+─────────────────────────────────────────────────────────────────────────────
+
+  - Moved the diagnostic probes into tests/ as probe_clusters.py, probe_k1rfi.py,
+    probe_k1rfi_livefeed.py (repo-relative src import; temp-dir output; probe_*
+    prefix so pytest does NOT collect them — they need live network).
+  - NEW tests/test_telnet_cluster.py: 19 network-free pytest cases driving
+    TelnetCluster._process_line — all four spot formats, mode/SNR extraction,
+    _infer_mode_from_freq (parametrized), control-char stripping, _strip_iac,
+    banner-silence vs malformed-spot-warning, and login-command storage.
+  - User added black to the venv mid-session; ran `uv run black` on all 9
+    touched files (5 src + 4 tests). (Harmless target-version warning; format
+    applied.)
+
+Verified: full suite 93 passed; all src modules import; settings dialog builds
+offscreen and round-trips the command field.
+
+Constraints honored: no git actions; no files deleted; numpy docstrings on
+public functions only; American spelling; all new code typed.
+
+─────────────────────────────────────────────────────────────────────────────
+FILES CHANGED (this session — complete list)
+─────────────────────────────────────────────────────────────────────────────
+  src/cty_cache.py        — Task 2 (_COUNTRY_NAME_FIXES + _sanitize_cty, wired
+                             into download_cty/ensure_cty)
+  src/dxspotter.py        — Task 2 (guard LookupLib build + _reinit_cinfo),
+                             Task 4 (command= at 8 TelnetCluster sites +
+                             SettingsDialog wiring + reconnect-on-change)
+  src/appconfig.py        — Task 2 (us_ca default -> False), Task 4
+                             (telnetN_command fields + load/save + docstrings)
+  src/settings_dialog.py  — Task 2 (us_ca default), Task 4 ("Login cmd:" field,
+                             property, __init__ params/docstrings)
+  src/telnet_cluster.py   — Task 3 (_LOOKS_LIKE_SPOT_RE banner suppression),
+                             Task 4 (command param + post-login send)
+  tests/test_telnet_cluster.py    — NEW FILE (Task 5, 19 cases)
+  tests/probe_clusters.py         — NEW FILE (Task 5, live diagnostic)
+  tests/probe_k1rfi.py            — NEW FILE (Task 5, live diagnostic)
+  tests/probe_k1rfi_livefeed.py   — NEW FILE (Task 5, live diagnostic)
+  ~/Library/Application Support/DXSpotter/config.toml — user data: us_ca=false,
+                             cluster4 command="sh/dx/50" (not in repo)
+
+Claude memory: added project_cty_pyhamtools_name_mismatch (why cty_cache
+sanitizes upstream country renames).
