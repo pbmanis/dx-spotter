@@ -79,11 +79,11 @@ _LAPTOP_COLS: frozenset[str] = frozenset(
 # new       = red (never worked, needed for award)
 AWARD_COLORS: dict[str, tuple[str, str]] = {
     'confirmed': ("#505050", "#d0d0d0"),
-    'worked':    ("#b85000", "#ffffff"),
+    'worked':    ("#05a995", "#ffffff"),
     'new':       ("#8b0000", "#ffffff"),
     'n/a':       ("#505050", "#808080"),  # same bg as confirmed, dimmer text
-    'over100':   ("#004040", "#00e0e0"),  # 5BD-only: band already ≥100 confirmed
-    'was_new':   ("#5a5000", "#ffff00"),  # WAS: state not yet worked on this band
+    'over100':   ("#C47A65", "#00e0e0"),  # 5BD-only: band already ≥100 confirmed
+    'was_new':   ("#ca653a", "#ffff00"),  # WAS: state not yet worked on this band
 }
 
 _CRIT_ABBR: dict[str, str] = {
