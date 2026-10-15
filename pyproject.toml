@@ -15,7 +15,7 @@ name = "dx-spotter"
 dynamic = ["version"]
 description = "Program to collect spots from psk reporter, telnet clusters, and wsjt-x, and display them in a nice way, with comparisons to an adif log file"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 authors = [
     { name = "Paul Manis"}   
 ]
@@ -29,8 +29,9 @@ dependencies = [
     "pyhamtools",
     "paho.mqtt",
     "pyqtgraph>=0.14.0",
-    "pyqt6>=6.11.0",
+    "pyqt6>=6.11.0; sys_platform != 'linux'",
     "black>=26.5.1",
+    "pillow>=12.2.0",
 ]
 
 [project.scripts]
@@ -42,7 +43,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 
 [tool.pyright]
-pythonVersion = "3.13"
+pythonVersion = "3.12"
 extraPaths = ["src"]
 
 [dependency-groups]
