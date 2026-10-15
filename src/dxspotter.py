@@ -603,6 +603,18 @@ class DXSpotter:
         assert self.args is not None
         if not self._config.wsjt_show_decodes:
             return
+
+        # Apply the mode filter so WSJT-X decodes honor the selected mode
+        # (e.g. a CW filter must not display FT8 decodes).
+        if self.args.mode is not None:
+            allowed = self._MODE_FILTER.get(self.args.mode.upper())
+            if allowed is not None and mode not in allowed:
+                if self.args.terminal:
+                    print(
+                        f"WSJT-X spot dropped: mode {mode!r} not in {self.args.mode!r} filter"
+                    )
+                return
+
         self.wsjt_counter += 1
 
         country = self.get_country_text(dx_call)
