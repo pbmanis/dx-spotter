@@ -11,6 +11,8 @@ Source URL: ``https://www.country-files.com/cty/cty.plist``
 
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import sys
 import time
@@ -21,30 +23,58 @@ CTY_URL: str = "https://www.country-files.com/cty/cty.plist"
 
 _MAX_AGE_DAYS: int = 30
 
-# country-files.com occasionally renames a DXCC entity to a spelling that the
-# installed pyhamtools ``countryfilemapping.json`` does not yet know, which
-# makes ``LookupLib(lookuptype="countryfile")`` raise ``KeyError`` while
-# parsing.  Each entry maps the name as it appears in the downloaded plist to
-# the name pyhamtools expects.  Applied by :func:`_sanitize_cty`.
-_COUNTRY_NAME_FIXES: dict[str, str] = {
-    "Cabo Verde": "Cape Verde",
-}
+# country-files.com and pyhamtools occasionally disagree on the spelling of a
+# DXCC entity (e.g. "Cape Verde" vs. "Cabo Verde").  When the name in the
+# downloaded plist is not a key in pyhamtools' ``countryfilemapping.json``,
+# ``LookupLib(lookuptype="countryfile")`` raises ``KeyError`` while parsing and
+# the entire lookup fails.  Each tuple below groups the spellings that refer to
+# the same entity; :func:`_sanitize_cty` rewrites every spelling in the plist
+# to whichever member the installed pyhamtools actually knows, so the fix
+# adapts automatically whenever pyhamtools changes its canonical spelling
+# (which has flipped at least once already).
+_COUNTRY_NAME_ALIASES: tuple[frozenset[str], ...] = (
+    frozenset({"Cabo Verde", "Cape Verde"}),
+)
+
+
+def _pyhamtools_country_names() -> set[str]:
+    # Return the set of country names the installed pyhamtools can map to an
+    # ADIF number, read from its bundled countryfilemapping.json.  Returns an
+    # empty set if pyhamtools or the mapping file cannot be located.
+    try:
+        import pyhamtools
+
+        mapping_path = os.path.join(
+            os.path.dirname(pyhamtools.__file__), "countryfilemapping.json"
+        )
+        with open(mapping_path, encoding="utf-8") as fh:
+            return set(json.load(fh).keys())
+    except Exception:
+        return set()
 
 
 def _sanitize_cty(path: Path) -> None:
-    # Rewrite the cached plist in place, replacing any country names that
-    # pyhamtools cannot map (see _COUNTRY_NAME_FIXES).  A no-op when the file
-    # contains none of the affected names, so it is safe to call every start.
+    # Rewrite the cached plist in place so every aliased country name uses the
+    # spelling the installed pyhamtools knows (see _COUNTRY_NAME_ALIASES).  A
+    # no-op when no replacement is needed, so it is safe to call every start.
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return
+    known = _pyhamtools_country_names()
     fixed = text
-    for old, new in _COUNTRY_NAME_FIXES.items():
-        fixed = fixed.replace(f"<string>{old}</string>", f"<string>{new}</string>")
+    for group in _COUNTRY_NAME_ALIASES:
+        canonical = next((name for name in group if name in known), None)
+        if canonical is None:
+            continue  # pyhamtools knows none of these spellings; leave as-is
+        for name in group:
+            if name != canonical:
+                fixed = fixed.replace(
+                    f"<string>{name}</string>", f"<string>{canonical}</string>"
+                )
     if fixed != text:
         path.write_text(fixed, encoding="utf-8")
-        print(f"CTY file sanitized: applied {len(_COUNTRY_NAME_FIXES)} name fix(es)")
+        print("CTY file sanitized: country names aligned to pyhamtools mapping")
 
 
 def cty_plist_path() -> Path:

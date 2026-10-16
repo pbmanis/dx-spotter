@@ -324,7 +324,7 @@ class MainWindow(QMainWindow):
             self._band_map.set_display_filter(initial_display_filter)
 
         # ── Paper QSL-only list ───────────────────────────────────────────────
-        _PAPER_COLS = ["Country", "Call", "Date", "Time", "Band"]
+        _PAPER_COLS = ["Entity", "Call", "Date", "Time", "Band"]
         _PAPER_COL_WIDTHS = [220, 100, 90, 65, 55]
         self._paper_table = QTableWidget(0, len(_PAPER_COLS))
         self._paper_table.setHorizontalHeaderLabels(_PAPER_COLS)

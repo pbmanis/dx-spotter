@@ -335,7 +335,7 @@ class WsjtxListener:
                         last_hb = time.time()
                         if self.on_heartbeat:
                             self.on_heartbeat()
-                    self._handle(data)
+                    self._handle(data, addr)
                 except socket.timeout:
                     pass
                 except Exception as exc:
@@ -602,7 +602,22 @@ class WsjtxListener:
         12: 'LoggedADIF', 13: 'HighlightCall', 14: 'SwitchConfig', 15: 'Configure',
     }
 
-    def _handle(self, data: bytes) -> None:
+    def _latch_wsjt_source(self, addr: 'tuple[str, int] | None') -> None:
+        # Point outgoing commands at the real WSJT-X instance.  On a multicast
+        # group, companion apps (JTAlert, GridTracker, RUMlogNG) also send
+        # packets, so the first datagram seen in _run may not be WSJT-X's.
+        # Status (type 1) and Decode (type 2) are emitted only by WSJT-X
+        # itself, so whenever one arrives we (re)latch the command destination
+        # to its source address — correcting a wrong initial latch and
+        # following WSJT-X if its source port changes.
+        if addr is None:
+            return
+        if (self._wsjt_host, self._wsjt_src_port) != (addr[0], addr[1]):
+            self._wsjt_host = addr[0]
+            self._wsjt_src_port = addr[1]
+            print(f"WSJT-X: command destination set to {addr[0]}:{addr[1]}")
+
+    def _handle(self, data: bytes, addr: 'tuple[str, int] | None' = None) -> None:
         mtype = -1
         r = _BinReader(data)
         try:
@@ -621,6 +636,7 @@ class WsjtxListener:
                 # print(f"WSJT-X ← {name} (type={mtype}  {len(data)}B  id={client_id!r})")
 
             elif mtype == self._MSG_STATUS:
+                self._latch_wsjt_source(addr)
                 self._dial_freq = r.uint64()
                 self._wsjt_mode = r.utf8()
                 dx_call  = r.utf8()
@@ -662,6 +678,7 @@ class WsjtxListener:
                     print("WSJT-X Reply echo ← (parse error)")
 
             elif mtype == self._MSG_DECODE:
+                self._latch_wsjt_source(addr)
                 self._last_decode_time = time.time()  # stamp before any filtering
                 r.bool_()                   # new
                 ms       = r.uint32()       # ms since midnight UTC (exact integer)

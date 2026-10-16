@@ -1875,3 +1875,132 @@ FILES CHANGED (this session — complete list)
 
 Claude memory: added project_cty_pyhamtools_name_mismatch (why cty_cache
 sanitizes upstream country renames).
+
+═════════════════════════════════════════════════════════════════════════════
+
+═════════════════════════════════════════════════════════════════════════════
+Date: 2026-10-16
+Model: claude-opus-4-8
+
+Title: filtering + lookup bug sweep after an upstream merge. A `uv sync` from a
+merge bumped pyhamtools 0.12 -> 0.13.2, which flipped the Cabo Verde spelling
+and crashed the country-file load, cascading into "Unknown" entities, a wrong
+QSL column, and a dead Display Filter. Also fixed the WSJT-X mode filter, made
+the version string single-source, renamed the Country column, fixed flaky
+WSJT-X double-click setup, and started dropping malformed cluster calls.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 1 — WSJT-X decodes ignored the mode filter
+─────────────────────────────────────────────────────────────────────────────
+
+Bug: with the Data Filter set to CW, FT8 decodes from WSJT-X still appeared.
+_on_wsjt_spot was the only spot handler with no mode filter (PSK and telnet
+both had one).
+
+  - dxspotter.py: added the _MODE_FILTER check to _on_wsjt_spot, dropping
+    before the counter increment, with a -t diagnostic line. Honors compound
+    filters (FC, CS, FCS) like the other sources.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 2 — Single authoritative version source (bump to 0.3.5.0)
+─────────────────────────────────────────────────────────────────────────────
+
+The version was set in three places (version.py, pyproject.toml, and the spec's
+CFBundleShortVersionString, which was stale at 0.2.2). Consolidated to one.
+
+  - version.py: reduced to a single literal `__version__: str = "0.3.5.0"`;
+    dropped the old importlib.metadata reconciliation (unneeded once the
+    package metadata derives from this file).
+  - pyproject.toml: `version` -> `dynamic = ["version"]` with
+    [tool.hatch.version] reading src/version.py (explicit `pattern` needed
+    because hatchling's default regex can't parse the `: str` annotation).
+  - dx-spotter.spec: imports __version__ from src/version.py (via SPECPATH) for
+    CFBundleShortVersionString, replacing the hardcoded 0.2.2.
+
+Verified: hatchling extracts 0.3.5.0; full build_app.sh completes; the bundle
+embeds 0.3.5.0 and launches.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 3 — "Unknown" entities / wrong QSL / dead Display Filter
+─────────────────────────────────────────────────────────────────────────────
+
+Root cause: pyhamtools 0.13.2's countryfilemapping.json now uses "Cabo Verde",
+while country-files.com's plist uses "Cape Verde" -> KeyError on load ->
+cinfo=None -> every entity "Unknown", award status uncomputable (QSL wrong),
+and the award-based Display Filter had nothing to filter on. The old one-way
+sanitizer (Cabo->Cape) was now backwards; the spelling had flip-flopped.
+
+  - cty_cache.py: replaced the one-way _COUNTRY_NAME_FIXES dict with a
+    version-adaptive scheme. _COUNTRY_NAME_ALIASES groups equivalent spellings;
+    _pyhamtools_country_names() reads the installed mapping json; _sanitize_cty
+    rewrites the plist to whichever spelling pyhamtools actually knows. Adding a
+    future rename now needs no "direction" to get right.
+
+Verified: LookupLib loads; D44 -> Cabo Verde (409); US/DE/JA/AU resolve.
+Updated the project_cty_pyhamtools_name_mismatch memory to record the flip.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 4 — "Country" column header renamed to "Entity"
+─────────────────────────────────────────────────────────────────────────────
+
+  - spot_window.py: COLUMNS "Country" -> "Entity"; COUNTRY_COL -> ENTITY_COL
+    (and its two call sites); laptop-cols set and comments updated.
+  - main_window.py: Paper-QSL list header "Country" -> "Entity".
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 5 — Flaky WSJT-X double-click ("DX Call never fills in")
+─────────────────────────────────────────────────────────────────────────────
+
+WSJT-X runs on the same machine but outputs to multicast 224.0.0.1, and the
+user also runs companion apps (JTAlert/GridTracker) on that group. The listener
+latched its command destination from the FIRST packet seen, which could be a
+companion app -> Configure (type 15) went to the wrong port -> DX Call never
+filled. (Accept UDP requests was confirmed enabled.)
+
+  - wsjtx_listener.py: added _latch_wsjt_source(addr); _handle now takes addr
+    and re-latches host/port from Status (1) and Decode (2) packets — emitted
+    only by WSJT-X — so the destination self-corrects a bad initial latch and
+    follows WSJT-X if its source port changes. _run passes addr to _handle.
+
+─────────────────────────────────────────────────────────────────────────────
+TASK 6 — Malformed cluster callsigns shown as "Unknown"
+─────────────────────────────────────────────────────────────────────────────
+
+A cluster delivered a corrupted, digit-less call ("KC5SCK" -> "KCSCK") which is
+not a valid callsign and genuinely can't map to a DXCC entity, so it showed as
+"Unknown". Proved the parser and table were NOT corrupting it (live capture
+showed KC5SCK intact resolving to United States) — the cluster sent it bad.
+Per the user's choice, drop such spots silently.
+
+  - dxspotter.py: in _on_telnet_spot, after get_dxcc(call), drop the spot when
+    `self.cinfo is not None and dxcc < 0` (with a -t note). The cinfo guard
+    prevents a missing cty file from dropping every cluster spot.
+
+Verified: all touched modules parse/import; headless offscreen run loads cinfo
+OK (RumLogNG, 201 entities), resolves entities, and a live telnet spot
+(KC5SCK -> United States) came through correctly.
+
+Constraints honored: no git actions; no files deleted; numpy docstrings on
+public functions only; American spelling; all new code typed. Did NOT run black
+across wsjtx_listener.py (its existing aligned-assignment style would churn);
+new code blocks follow PEP 8.
+
+─────────────────────────────────────────────────────────────────────────────
+FILES CHANGED (this session — complete list)
+─────────────────────────────────────────────────────────────────────────────
+  src/version.py          — Task 2 (single literal, dropped metadata logic)
+  pyproject.toml          — Task 2 (dynamic version via hatchling)
+  dx-spotter.spec         — Task 2 (import __version__ for bundle version)
+  src/cty_cache.py        — Task 3 (version-adaptive sanitizer:
+                             _COUNTRY_NAME_ALIASES + _pyhamtools_country_names +
+                             rewritten _sanitize_cty)
+  src/dxspotter.py        — Task 1 (mode filter in _on_wsjt_spot),
+                             Task 6 (drop unresolvable telnet calls)
+  src/spot_window.py      — Task 4 (Country -> Entity column + ENTITY_COL)
+  src/main_window.py      — Task 4 (Paper-QSL header Country -> Entity)
+  src/wsjtx_listener.py   — Task 5 (_latch_wsjt_source + addr re-latch)
+  ~/Library/Application Support/DXSpotter/cty.plist — user data: re-sanitized
+                             to "Cabo Verde" (not in repo)
+
+Claude memory: updated project_cty_pyhamtools_name_mismatch (spelling flips
+across pyhamtools versions; sanitizer is now version-adaptive).

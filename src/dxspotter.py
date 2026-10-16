@@ -738,6 +738,15 @@ class DXSpotter:
             return
 
         dxcc = self.get_dxcc(call)
+        # Drop cluster spots whose callsign cannot be resolved to a DXCC entity.
+        # Clusters occasionally deliver corrupted or mistyped calls (e.g. a
+        # digit lost in transit, turning "KC5SCK" into the invalid "KCSCK"),
+        # which are not real stations.  Only applied when the lookup library is
+        # available, so a missing cty file does not drop every cluster spot.
+        if self.cinfo is not None and dxcc < 0:
+            if self.args.terminal:
+                print(f"telnet spot dropped: unresolvable callsign {call!r}")
+            return
         country = self.get_country_text(call)
         freq_offset = self.get_freq_offset(freq_hz, band, mode)
         unix_time = raw["unix_time"]

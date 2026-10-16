@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from adif_log import ADIFLog
 
 
-COLUMNS = ["DX Call", "SNR", "Country", "DX Grid", "Time", "Spot Age",
+COLUMNS = ["DX Call", "SNR", "Entity", "DX Grid", "Time", "Spot Age",
            "dHz", "Dist", "Mode", "Band", "Src", "Reporter", "Rptr Grid",
            "Range", "QSL"]
 
@@ -54,7 +54,7 @@ _MAINLAND_US_DXCC: int = 291
 SPOT_AGE_COL = COLUMNS.index("Spot Age")
 QSL_COL      = COLUMNS.index("QSL")
 CALL_COL     = COLUMNS.index("DX Call")
-COUNTRY_COL  = COLUMNS.index("Country")
+ENTITY_COL   = COLUMNS.index("Entity")
 REPORTER_COL = COLUMNS.index("Reporter")
 TIME_COL     = COLUMNS.index("Time")
 
@@ -70,7 +70,7 @@ _SRC_ABBR: dict[str, str] = {
 
 # Columns visible in Laptop Mode.
 _LAPTOP_COLS: frozenset[str] = frozenset(
-    {"DX Call", "SNR", "Country", "DX Grid", "Time", "Mode", "Src", "Reporter", "QSL"}
+    {"DX Call", "SNR", "Entity", "DX Grid", "Time", "Mode", "Src", "Reporter", "QSL"}
 )
 
 # 3-state award color scheme
@@ -570,7 +570,7 @@ class SpotTable(QWidget):
         else:
             qsl_text = _award_qsl_label(status, criterion, band, conf_list, wkd_list)
 
-        # WAS mode: replace Country with "US <state>" for US stations.
+        # WAS mode: replace Entity with "US <state>" for US stations.
         orig_country = spot['country']
         country_display = orig_country
         if criterion == 'was' and dxcc == 291:
@@ -580,7 +580,7 @@ class SpotTable(QWidget):
         values = [
             spot['call'],                                                    # DX Call
             f"{spot['rp']} dB",                                              # SNR
-            country_display,                                                 # Country
+            country_display,                                                 # Entity
             spot['loc'][:6],                                                 # DX Grid
             ts[-8:] if self._laptop_mode else ts,                           # Time
             _format_age(int(time.time() - spot['unix_time'])),              # Spot Age
@@ -608,7 +608,7 @@ class SpotTable(QWidget):
                 item.setData(Qt.ItemDataRole.UserRole, {'dxcc': dxcc, 'band': band, 'mode': mode})
             elif col == TIME_COL:
                 item.setData(Qt.ItemDataRole.UserRole, ts)
-            elif col == COUNTRY_COL:
+            elif col == ENTITY_COL:
                 item.setData(Qt.ItemDataRole.UserRole, orig_country)
             self.table.setItem(row, col, item)
 
@@ -732,8 +732,8 @@ class SpotTable(QWidget):
                 else:
                     qsl_item.setText(_award_qsl_label(status, criterion, band, conf_list, wkd_list))
 
-            # Update Country column: show "US <state>" for WAS, restore original otherwise.
-            country_item = self.table.item(row, COUNTRY_COL)
+            # Update Entity column: show "US <state>" for WAS, restore original otherwise.
+            country_item = self.table.item(row, ENTITY_COL)
             if country_item is not None:
                 orig_country: str = country_item.data(Qt.ItemDataRole.UserRole) or country_item.text()
                 if criterion == 'was' and dxcc == 291:
