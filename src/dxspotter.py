@@ -149,8 +149,12 @@ class DXSpotter:
         self._rig_freq_khz: float = (
             0.0  # latest RX freq from the active rig-control backend (GIL-safe)
         )
+        self._rig_reachable: bool = (
+            False  # True when the rig-control backend answered the last poll (GIL-safe)
+        )
         self._rig_poll_stop_event: threading.Event = threading.Event()
         self._rig_poll_thread: threading.Thread | None = None
+        self._rig_status_message: str = ""  # QSY diagnostics; written by worker threads
         self._fcc_build_thread: threading.Thread | None = None
         self._fcc_status_message: str = ""  # written by worker, read by timer tick
 
@@ -809,6 +813,12 @@ class DXSpotter:
         # Route a double-clicked spot to the appropriate radio-control path.
         # Mode drives routing; source tag (psk / wsjt / telnet / …) does not.
         mode = spot_data.get("md", "").upper()
+        print(
+            f"Double-click: call={spot_data.get('call')!r} mode={mode!r} "
+            f"source={spot_data.get('source')!r} "
+            f"freq_offset={spot_data.get('freq_offset')!r} "
+            f"-> {'digital/WSJT-X' if mode in self._WSJT_DIGITAL else 'rig QSY'}"
+        )
         if mode in self._WSJT_DIGITAL:
             self._activate_digital_spot(spot_data)
         else:
@@ -888,23 +898,29 @@ class DXSpotter:
                 _call = call
 
                 def _qsy_digital() -> None:
+                    if not avail_fn(_host, _port):
+                        self._report_rig(
+                            f"Rig unreachable at {_host}:{_port} — is the bridge up?"
+                        )
+                        return
                     try:
-                        if not avail_fn(_host, _port):
-                            print(f"Rig control not reachable at {_host}:{_port}")
-                            return
                         client = client_cls(host=_host, port=_port, timeout=_timeout)
                         result = client.set_freq_and_mode(
                             dial_khz, digital_mode, verify_delay=_verify_delay
                         )
-                        if result.success:
-                            print(
-                                f"Rig QSY: {_call} → {dial_khz:.3f} kHz {digital_mode} "
-                                f"({mode})"
-                            )
-                        else:
-                            print(f"Rig QSY failed for {_call}: {result.errors}")
-                    except Exception as exc:
-                        print(f"Rig QSY exception for {_call}: {exc}")
+                    except (OSError, ValueError) as exc:
+                        self._report_rig(f"Rig QSY error for {_call}: {exc}")
+                        return
+                    if result.success:
+                        self._report_rig(
+                            f"Rig QSY: {_call} → {dial_khz:.3f} kHz "
+                            f"{digital_mode} ({mode})"
+                        )
+                    else:
+                        self._report_rig(
+                            f"Rig QSY failed for {_call}: "
+                            f"{'; '.join(result.errors)}"
+                        )
 
                 threading.Thread(target=_qsy_digital, daemon=True).start()
 
@@ -1038,37 +1054,51 @@ class DXSpotter:
         # For PSK/telnet CW and SSB spots, freq_offset is the absolute
         # frequency in Hz (self.freqs has no entry for these modes, so
         # get_freq_offset returns payload['f'] - 0 = payload['f']).
+        call = spot_data.get("call", "")
         if not self._config.rig_control_enabled:
-            print(
-                f"Double-click: rig control not enabled for "
-                f"{spot_data.get('call')} ({spot_data.get('md')})"
-            )
+            self._report_rig(f"Rig control disabled — enable it in Settings ({call})")
             return
         psk_mode = spot_data.get("md", "").upper()
         freq_khz = spot_data.get("freq_offset", 0) / 1000.0
+        if freq_khz <= 0.0:
+            self._report_rig(f"Rig QSY: no frequency for {call} (mode {psk_mode!r})")
+            return
         rig_mode = self._psk_mode_to_rig_mode(psk_mode, freq_khz)
         if rig_mode is None:
-            print(f"Double-click: no rig mode mapping for {psk_mode!r}")
+            self._report_rig(f"Rig QSY: mode {psk_mode!r} not supported ({call})")
             return
         client_cls, avail_fn, host, port, timeout, verify_delay = (
             self._rig_backend_settings()
         )
-        call = spot_data.get("call", "")
 
         def _run() -> None:
             if not avail_fn(host, port):
-                print(f"Rig control not reachable at {host}:{port}")
+                self._report_rig(f"Rig unreachable at {host}:{port} — is the bridge up?")
                 return
-            client = client_cls(host=host, port=port, timeout=timeout)
-            result = client.set_freq_and_mode(
-                freq_khz, rig_mode, verify_delay=verify_delay
-            )
+            try:
+                client = client_cls(host=host, port=port, timeout=timeout)
+                result = client.set_freq_and_mode(
+                    freq_khz, rig_mode, verify_delay=verify_delay
+                )
+            except (OSError, ValueError) as exc:
+                self._report_rig(f"Rig QSY error for {call}: {exc}")
+                return
             if result.success:
-                print(f"Rig QSY: {call} → {freq_khz:.3f} kHz {rig_mode}")
+                self._report_rig(
+                    f"Rig QSY: {call} → {freq_khz:.3f} kHz {rig_mode}"
+                )
             else:
-                print(f"Rig QSY failed for {call}: {result.errors}")
+                self._report_rig(
+                    f"Rig QSY failed for {call}: {'; '.join(result.errors)}"
+                )
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _report_rig(self, message: str) -> None:
+        # Surface a rig-control diagnostic both to the terminal and to the GUI
+        # status bar. Writing the str is GIL-safe; the 250 ms timer displays it.
+        print(message)
+        self._rig_status_message = message
 
     @staticmethod
     def _psk_mode_to_rig_mode(psk_mode: str, freq_khz: float) -> str | None:
@@ -1104,10 +1134,13 @@ class DXSpotter:
                 try:
                     client = client_cls(host=host, port=port, timeout=0.15)
                     self._rig_freq_khz = client.get_rx_freq_khz()
+                    self._rig_reachable = True
                 except OSError:
                     self._rig_freq_khz = 0.0
+                    self._rig_reachable = False
             else:
                 self._rig_freq_khz = 0.0
+                self._rig_reachable = False
             self._rig_poll_stop_event.wait(1.0)
 
     def _update_rig_band(self) -> None:
@@ -1135,6 +1168,28 @@ class DXSpotter:
         self.window._params.child("Data Filters").child("Band").setValue(
             band
         )  # noqa: SLF001
+
+    def _update_rig_status_indicator(self) -> None:
+        # Called from the 250 ms Qt timer.  Refresh the left-side rig-control
+        # status label from the reachability flag updated by _rig_poll_loop.
+        if self.window is None:
+            return
+        _cls, _avail, host, port, _timeout, _delay = self._rig_backend_settings()
+        backend = "rigctld" if self._config.rig_backend == "rigctld" else "Commander"
+        if not self._config.rig_control_enabled:
+            self.window.set_rig_status("Rig: off", None)
+        elif self._rig_reachable:
+            freq = self._rig_freq_khz
+            if freq > 0:
+                self.window.set_rig_status(
+                    f"Rig: {backend} {freq / 1000.0:.3f} MHz", True
+                )
+            else:
+                self.window.set_rig_status(f"Rig: {backend} connected", True)
+        else:
+            self.window.set_rig_status(
+                f"Rig: {backend} unreachable ({host}:{port})", False
+            )
 
     def _effective_bandmap_band(self) -> str | None:
         # Determine the band the bandmap should display, in priority order:
@@ -1348,7 +1403,11 @@ class DXSpotter:
             self._update_pskr_status()
             self._update_telnet_status()
             self._update_rig_band()
+            self._update_rig_status_indicator()
             self.window.set_bandmap_band(self._effective_bandmap_band())
+            if self._rig_status_message:
+                self.window.statusBar().showMessage(self._rig_status_message, 8000)
+                self._rig_status_message = ""
             if self._fcc_status_message:
                 self.window.statusBar().showMessage(self._fcc_status_message, 6000)
                 self._fcc_status_message = ""

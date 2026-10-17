@@ -187,6 +187,12 @@ class MainWindow(QMainWindow):
         self._sb_pskr.setStyleSheet("padding: 0 6px; color: #888888;")
         self._sb_wsjt.setStyleSheet("padding: 0 6px;")
         self._sb_telnet = {1: self._sb_t1, 2: self._sb_t2, 3: self._sb_t3, 4: self._sb_t4}
+
+        # Rig-control indicator — pinned to the LEFT side of the status bar.
+        self._sb_rig = QLabel("Rig: off")
+        self._sb_rig.setStyleSheet("padding: 0 6px; color: #888888;")
+        self.statusBar().addWidget(self._sb_rig)            # left: rig control
+
         self.statusBar().addPermanentWidget(self._sb_t1)    # right: T1
         self.statusBar().addPermanentWidget(self._sb_t2)    # right: T2
         self.statusBar().addPermanentWidget(self._sb_t3)    # right: T3
@@ -648,6 +654,27 @@ class MainWindow(QMainWindow):
             color = "#888888"
         self._sb_wsjt.setStyleSheet(f"padding: 0 6px; color: {color};")
         self._sb_wsjt.setText(text)
+
+    def set_rig_status(self, text: str, ok: bool | None = None) -> None:
+        """Update the rig-control status indicator on the left of the status bar.
+
+        Parameters
+        ----------
+        text : str
+            Status text to display (e.g. ``'Rig: rigctld 14.025 MHz'``).
+        ok : bool or None, optional
+            ``True``  → green text (backend reachable).
+            ``False`` → red text (enabled but unreachable).
+            ``None``  → grey text (rig control disabled).
+        """
+        if ok is True:
+            color = "#55cc55"
+        elif ok is False:
+            color = "#cc4444"
+        else:
+            color = "#888888"
+        self._sb_rig.setStyleSheet(f"padding: 0 6px; color: {color};")
+        self._sb_rig.setText(text)
 
     def set_telnet_status(self, index: int, text: str, ok: bool | None = None) -> None:
         """Update a DX cluster telnet connection status indicator in the status bar.
