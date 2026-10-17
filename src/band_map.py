@@ -219,9 +219,17 @@ _BAND_MODE_ZOOM_RANGES: dict[str, dict[str, tuple[float, float] | None]] = {
         "CW": (144000.0, 144100.0),
         "RTTY": (144050.0, 144100.0),
         "FT8": (144173.0, 144178.0),
-        "FT4": (144170.0, 144174.0),   
+        "FT4": (144170.0, 144174.0),
         "FT2": (144176.0, 144178.0),     # dial 144177 kHz +/- 1
         "SSB": (144150.0, 144300.0),
+    },
+    "70cm": {
+        "CW": None,                      # 70cm CW/SSB sub-bands not mapped yet
+        "RTTY": None,
+        "FT8": (432173.0, 432178.0),     # dial 432174 kHz +/- ~2
+        "FT4": None,
+        "FT2": None,
+        "SSB": None,
     },
 }
 
@@ -250,6 +258,10 @@ _SSB_FREQ_OFFSETS: dict[str, float] = {
     "10m": +3.0,
     "6m": +3.0,
     "2m": +3.0,
+    "1.25m": +3.0,
+    "70cm": +3.0,
+    "33cm": +3.0,
+    "23cm": +3.0,
 }
 
 
