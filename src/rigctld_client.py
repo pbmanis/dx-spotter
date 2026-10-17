@@ -9,13 +9,19 @@ in its own settings).
 
 Protocol summary
 -----------------
-Commands are prefixed with ``+`` to request the extended-response format,
-which always terminates with an ``RPRT <code>`` line (``0`` = success)::
+This client uses the *plain* (non-extended) rigctld protocol.  Get commands
+return bare values, one per line, with no terminator; set commands return a
+single ``RPRT <code>`` line (``0`` = success)::
 
-    +f          -> get_freq:\\nFrequency: 14074000\\nRPRT 0
-    +F 14074000 -> set_freq: 14074000\\nRPRT 0
-    +m          -> get_mode:\\nMode: USB\\nPassband: 2400\\nRPRT 0
-    +M USB 0    -> set_mode: USB 0\\nRPRT 0
+    f          -> 14074000
+    F 14074000 -> RPRT 0
+    m          -> USB\\n2400
+    M USB 0    -> RPRT 0
+
+The plain protocol is understood by real Hamlib ``rigctld`` and by lightweight
+bridges such as K2K3Controller's CAT/PTT bridge.  (The extended ``+``-prefixed
+dialect — ``+f``, ``+F`` … — is *not* universally implemented; the
+K2K3Controller bridge rejects it with ``RPRT -11``, so it is avoided here.)
 
 Frequencies are exchanged in whole Hz; this client converts to/from kHz to
 match :class:`~commander_client.CommanderClient`'s interface.
@@ -156,8 +162,11 @@ class RigctldClient:
     def _query(self, command: str) -> str:
         """Send *command* and return the raw response string.
 
-        Reads until an ``RPRT`` line (the extended-protocol terminator) has
-        been seen, or the timeout budget is exhausted.
+        In the plain protocol a set command answers with a single ``RPRT``
+        line and a get command answers with one or more bare value lines (no
+        terminator).  Reading therefore stops as soon as a complete line has
+        arrived (buffer ends with a newline) or an ``RPRT`` line is seen, or
+        the timeout budget is exhausted.
         """
         buf = b''
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -175,7 +184,7 @@ class RigctldClient:
                     if not chunk:
                         break          # rigctld closed the connection
                     buf += chunk
-                    if b'RPRT' in buf:
+                    if b'RPRT' in buf or buf.endswith(b'\n'):
                         break
                 except socket.timeout:
                     break
@@ -188,14 +197,17 @@ class RigctldClient:
     # -- response parsing -----------------------------------------------------
 
     @staticmethod
-    def _field(response: str, label: str) -> str:
-        """Return the value following ``label:`` in an extended-format response."""
-        m = re.search(re.escape(label) + r':\s*(\S+)', response)
-        return m.group(1) if m else ''
+    def _first_line(response: str) -> str:
+        """Return the first non-empty line of a plain-protocol response."""
+        for line in response.splitlines():
+            line = line.strip()
+            if line:
+                return line
+        return ''
 
     @staticmethod
     def _rprt_ok(response: str) -> bool:
-        """Return ``True`` when the response's trailing ``RPRT`` code is ``0``."""
+        """Return ``True`` when the response's ``RPRT`` code is ``0``."""
         m = re.search(r'RPRT\s+(-?\d+)', response)
         return m is not None and m.group(1) == '0'
 
@@ -209,9 +221,9 @@ class RigctldClient:
         float
             RX frequency in kHz, or ``0.0`` if not yet reported by the rig.
         """
-        resp = self._query('+f')
+        resp = self._query('f')
         try:
-            return float(self._field(resp, 'Frequency')) / 1000.0
+            return float(self._first_line(resp)) / 1000.0
         except ValueError:
             return 0.0
 
@@ -224,18 +236,19 @@ class RigctldClient:
             Mode such as ``'CW'``, ``'USB'``, ``'PKTUSB'``.  Returns ``''``
             if not yet reported by the rig.
         """
-        resp = self._query('+m')
-        return self._field(resp, 'Mode')
+        resp = self._query('m')
+        mode = self._first_line(resp)
+        return '' if mode.startswith('RPRT') else mode
 
     def get_split(self) -> bool:
         """Return ``True`` when the transceiver is in split mode."""
-        resp = self._query('+s')
-        return self._field(resp, 'Split') == '1'
+        resp = self._query('s')
+        return self._first_line(resp) == '1'
 
     def get_transmitting(self) -> bool:
         """Return ``True`` when the transceiver is currently transmitting (PTT)."""
-        resp = self._query('+t')
-        return self._field(resp, 'PTT') not in ('', '0')
+        resp = self._query('t')
+        return self._first_line(resp) == '1'
 
     def get_state(self) -> TransceiverState:
         """Query rigctld and return a full :class:`TransceiverState` snapshot.
@@ -311,10 +324,10 @@ class RigctldClient:
             )
 
         freq_hz = int(round(freq_khz * 1000))
-        self._query('+T 0')
-        self._query('+S 0 VFOA')
-        self._query(f'+F {freq_hz}')
-        self._query(f'+M {mode} 0')
+        self._query('T 0')
+        self._query('S 0 VFOA')
+        self._query(f'F {freq_hz}')
+        self._query(f'M {mode} 0')
 
         time.sleep(verify_delay)
         actual = self.get_state()
