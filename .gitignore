@@ -141,3 +141,5 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+src/data/cty.plist
+.vscode/dead-code-history.json
