@@ -522,7 +522,7 @@ class ADIFLog:
 
         if criterion == '5bd':
             if band_up not in _5BD_BANDS:
-                return 'new'
+                return 'n/a'          # band cannot contribute to 5-Band DXCC
             if band_up in self._confirmed_bands.get(dxcc, set()):
                 return 'confirmed'
             if band_up in self._worked_bands.get(dxcc, set()):
