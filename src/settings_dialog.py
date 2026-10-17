@@ -499,6 +499,18 @@ class SettingsDialog(QDialog):
             port_spin.setValue(port)
             call_edit = QLineEdit(callsign.upper())
             call_edit.setPlaceholderText("Your callsign")
+            call_edit.setToolTip(
+                "Login callsign for this cluster.\n\n"
+                "DXSpider nodes (e.g. W3LPL, many others) allow only ONE session "
+                "per callsign across the whole interconnected cluster network. "
+                "Using the same bare callsign on two DXSpider clusters makes them "
+                "repeatedly disconnect each other.\n\n"
+                "To avoid this, give each cluster a distinct SSID suffix such as "
+                "NC3G-1, NC3G-2, etc. If you enter a bare callsign with no '-SSID', "
+                "DX Spotter automatically appends this cluster's index (e.g. "
+                "'NC3G' on Cluster 3 logs in as 'NC3G-3') so connections never "
+                "collide. The login SSID does not affect displayed spots."
+            )
             cmd_edit = QLineEdit(command)
             cmd_edit.setPlaceholderText("e.g. sh/dx/50 (optional)")
             form.addRow("", enabled_cb)

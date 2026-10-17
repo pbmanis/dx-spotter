@@ -255,24 +255,41 @@ class TelnetCluster(threading.Thread):
         port : int
             TCP port.
         callsign : str
-            Operator callsign (case-insensitive; stored upper-case).
+            Operator callsign (case-insensitive; stored upper-case).  If it
+            carries no ``-SSID`` suffix, the cluster *index* is appended
+            automatically (e.g. ``'NC3G'`` on cluster 3 logs in as
+            ``'NC3G-3'``) so simultaneous connections to interconnected
+            DXSpider nodes do not disconnect one another.
         on_spot : SpotCallback
             Callback invoked for each parsed DX spot dict.
         index : int, optional
-            Connection index (1 or 2).
+            Connection index (1-4); also used as the auto-appended login SSID.
         command : str, optional
             Command sent after login; empty sends nothing.
         """
         super().__init__(daemon=True, name=f"telnet-cluster-{index}")
         self._host = host
         self._port = port
-        self._callsign = callsign.upper()
+        self._callsign = self._login_callsign(callsign, index)
         self._on_spot = on_spot
         self._index = index
         self._command = command.strip()
         self._stop_event = threading.Event()
         self._sock: socket.socket | None = None
         self._connected: bool = False
+
+    @staticmethod
+    def _login_callsign(callsign: str, index: int) -> str:
+        # DXSpider nodes permit only one session per callsign across the whole
+        # interconnected cluster network, so the same bare call on two nodes
+        # makes them repeatedly disconnect each other. When the configured call
+        # carries no SSID, append the cluster index (e.g. "NC3G" on cluster 3
+        # becomes "NC3G-3") so each connection is a distinct user. A call that
+        # already has an explicit "-SSID" is honored as entered.
+        call = callsign.strip().upper()
+        if not call or "-" in call:
+            return call
+        return f"{call}-{index}"
 
     @property
     def connected(self) -> bool:
