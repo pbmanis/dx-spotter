@@ -611,20 +611,23 @@ class MainWindow(QMainWindow):
         parts = [p.upper() for p in (call, grid) if p]
         self._station_label.setText("  ".join(parts))
 
-    def set_pskr_status(self, text: str, ok: bool | None = None) -> None:
+    def set_pskr_status(self, text: str, ok: bool | str | None = None) -> None:
         """Update the PSK Reporter connection status indicator in the status bar.
 
         Parameters
         ----------
         text : str
             Status text to display (e.g. ``'PSKR: connected'``).
-        ok : bool or None, optional
-            ``True``  → green text (connected).
-            ``False`` → orange text (error / reconnecting).
-            ``None``  → grey text (unknown / not yet connected).
+        ok : bool or str or None, optional
+            ``True``    → green text (connected, messages arriving).
+            ``'warn'``  → yellow text (connected but broker silent).
+            ``False``   → orange text (error / reconnecting).
+            ``None``    → grey text (unknown / not yet connected).
         """
         if ok is True:
             color = "#55cc55"
+        elif ok == 'warn':
+            color = "#cccc44"
         elif ok is False:
             color = "#cc8800"
         else:

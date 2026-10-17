@@ -105,6 +105,7 @@ class SettingsDialog(QDialog):
         pskr_port: int = 1883,
         pskr_service_name: str = "PSK Reporter",
         pskr_reshow_secs: int = 300,
+        pskr_no_spot_mins: int = 3,
         cty_path: str = "",
         parent=None,
     ) -> None:
@@ -217,6 +218,9 @@ class SettingsDialog(QDialog):
         pskr_reshow_secs : int, optional
             Minimum seconds between successive table entries for the same
             PSK Reporter callsign.  Default is ``300``.
+        pskr_no_spot_mins : int, optional
+            Minutes with no broker messages after which the PSK Reporter status
+            indicator warns (yellow).  Default is ``3``.
         cty_path : str, optional
             Path to the current cached CTY plist file (used only for display).
             Default ``''``.
@@ -607,11 +611,16 @@ class SettingsDialog(QDialog):
         self._pskr_reshow_spin.setRange(0, 3600)
         self._pskr_reshow_spin.setSuffix(" s")
         self._pskr_reshow_spin.setValue(pskr_reshow_secs)
+        self._pskr_no_spot_spin = QSpinBox()
+        self._pskr_no_spot_spin.setRange(1, 60)
+        self._pskr_no_spot_spin.setSuffix(" min")
+        self._pskr_no_spot_spin.setValue(pskr_no_spot_mins)
         pskr_form.addRow("", self._pskr_enabled)
         pskr_form.addRow("MQTT Host:", self._pskr_host)
         pskr_form.addRow("MQTT Port:", self._pskr_port)
         pskr_form.addRow("Service Name:", self._pskr_service_name)
         pskr_form.addRow("Call Re-show Interval:", self._pskr_reshow_spin)
+        pskr_form.addRow("No-spot warning after:", self._pskr_no_spot_spin)
 
         pskr_note = QLabel(
             "Service Name is for reference only (shown in this dialog); it has "
@@ -969,6 +978,11 @@ class SettingsDialog(QDialog):
     def pskr_reshow_secs(self) -> int:
         """Minimum seconds between successive table entries for the same PSK Reporter call."""
         return self._pskr_reshow_spin.value()
+
+    @property
+    def pskr_no_spot_mins(self) -> int:
+        """Minutes with no broker messages before the PSK Reporter indicator warns."""
+        return self._pskr_no_spot_spin.value()
 
     @property
     def cty_refreshed(self) -> bool:

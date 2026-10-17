@@ -23,6 +23,7 @@ Example usage::
 from __future__ import annotations
 
 import json
+import time
 from typing import Callable
 
 import paho.mqtt.client as mqtt
@@ -79,6 +80,7 @@ class MqttListener:
         self._topic = topic
         self._on_spot = on_spot
         self._connected: bool = False
+        self._last_message_time: float = 0.0
 
         self._client: mqtt.Client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self._client.on_connect = self._handle_connect
@@ -96,6 +98,15 @@ class MqttListener:
     def topic(self) -> str:
         """The active subscription topic string."""
         return self._topic
+
+    @property
+    def last_message_time(self) -> float:
+        """Unix timestamp of the most recent message from the broker, or 0.0.
+
+        Updated on every incoming message before JSON parsing, so it reflects
+        broker activity even for payloads that fail to decode.
+        """
+        return self._last_message_time
 
     def start(self) -> None:
         """Connect to the broker and start the background network loop.
@@ -146,6 +157,7 @@ class MqttListener:
 
     def _handle_message(self, client, userdata, msg) -> None:
         # Parse incoming JSON and forward raw payload to the caller's callback.
+        self._last_message_time = time.time()  # stamp before parsing
         try:
             payload = json.loads(msg.payload)
         except json.JSONDecodeError as exc:

@@ -988,10 +988,8 @@ class DXSpotter:
         if not self._config.pskr_enabled:
             self.window.set_pskr_status("PSKR: disabled", ok=None)
             return
-        connected = (
-            self._mqtt_listener.connected if self._mqtt_listener is not None else False
-        )
-        if not connected:
+        listener = self._mqtt_listener
+        if listener is None or not listener.connected:
             self.window.set_pskr_status(f"PSKR: {DISCONNECTED}", ok=None)
             return
         # Connected — warn (yellow) when the broker has been silent, which
@@ -999,7 +997,7 @@ class DXSpotter:
         # rather than a quiet band.
         now = time.time()
         no_msg_secs = self._config.pskr_no_spot_mins * 60
-        last_msg = self._mqtt_listener.last_message_time
+        last_msg = listener.last_message_time
         if last_msg == 0.0 or (now - last_msg) > no_msg_secs:
             self.window.set_pskr_status(f"PSKR: {CONNECTED} no data", ok="warn")
         else:

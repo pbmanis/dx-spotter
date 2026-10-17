@@ -35,8 +35,6 @@ class AppConfig:
         The default ``'224.0.0.1'`` is the WSJT-X standard multicast address,
         which lets multiple apps each receive an independent copy of every
         packet.
-    udp_port : int
-        UDP port number that WSJT-X sends to (default ``2237``).
     log_source : str
         Which contact log backend to load: ``'adif'`` (plain ADIF file) or
         ``'rumlogng'`` (RumLogNG CloudKit SQLite database).
@@ -196,10 +194,14 @@ class AppConfig:
         same callsign from PSK Reporter.  A callsign heard again within this
         window is silently dropped, mirroring :attr:`wsjt_reshow_secs`.
         Default is ``300`` (5 minutes).
+    pskr_no_spot_mins : int
+        Minutes with no messages from the PSK Reporter broker after which the
+        status indicator warns (yellow), signalling a connected-but-silent feed
+        (e.g. an MQTT outage).  Mirrors :attr:`wsjt_no_spot_mins`.  Default
+        ``3``.
     """
 
     udp_address: str = "224.0.0.1"
-    udp_port: int = 2237
     log_source: str = "adif"
     adif_path: str = ""
     my_grid: str = "FM05kw"
@@ -255,6 +257,7 @@ class AppConfig:
     pskr_port: int = 1883
     pskr_service_name: str = "PSK Reporter"
     pskr_reshow_secs: int = 300
+    pskr_no_spot_mins: int = 3
 
 
 def config_path() -> Path:
@@ -304,7 +307,6 @@ def load_config() -> AppConfig:
 
     net = data.get("network", {})
     cfg.udp_address = str(net.get("udp_address", cfg.udp_address))
-    cfg.udp_port = int(net.get("udp_port", cfg.udp_port))
 
     adif = data.get("adif", {})
     cfg.log_source = str(adif.get("log_source", cfg.log_source))
@@ -319,6 +321,13 @@ def load_config() -> AppConfig:
     cfg.max_spot_age = int(filt.get("max_spot_age", cfg.max_spot_age))
     cfg.wsjt_enabled = bool(filt.get("wsjt_enabled", cfg.wsjt_enabled))
     cfg.wsjt_port = int(filt.get("wsjt_port", cfg.wsjt_port))
+    # Migrate from the pre-unification [network].udp_port key: older builds let
+    # the settings dialog write the WSJT-X port there instead of wsjt_port.  If
+    # wsjt_port still holds the default but a non-default legacy value was
+    # saved, adopt it so the user's configured port is not silently lost.
+    legacy_udp_port = int(net.get("udp_port", 0))
+    if cfg.wsjt_port == 2237 and legacy_udp_port not in (0, 2237):
+        cfg.wsjt_port = legacy_udp_port
     cfg.wsjt_show_decodes = bool(filt.get("wsjt_show_decodes", cfg.wsjt_show_decodes))
     raw_prefixes = filt.get("rx_grid_prefixes", None)
     if isinstance(raw_prefixes, list):
@@ -384,6 +393,7 @@ def load_config() -> AppConfig:
     cfg.pskr_port = int(pskr.get("port", cfg.pskr_port))
     cfg.pskr_service_name = str(pskr.get("service_name", cfg.pskr_service_name))
     cfg.pskr_reshow_secs = int(pskr.get("reshow_secs", cfg.pskr_reshow_secs))
+    cfg.pskr_no_spot_mins = int(pskr.get("no_spot_mins", cfg.pskr_no_spot_mins))
 
     return cfg
 
@@ -407,7 +417,6 @@ def save_config(cfg: AppConfig) -> None:
 
 [network]
 udp_address = "{cfg.udp_address}"
-udp_port    = {cfg.udp_port}
 
 [adif]
 log_source = "{cfg.log_source}"
@@ -481,5 +490,6 @@ host         = "{cfg.pskr_host}"
 port         = {cfg.pskr_port}
 service_name = "{cfg.pskr_service_name}"
 reshow_secs  = {cfg.pskr_reshow_secs}
+no_spot_mins = {cfg.pskr_no_spot_mins}
 """
     path.write_text(content, encoding="utf-8")
