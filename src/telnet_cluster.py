@@ -48,7 +48,7 @@ from typing import Callable
 # Standard format: "DX de <spotter>: <freq> <dx_call> <comment>"
 # Groups: (spotter_call, freq_kHz, dx_call, comment)
 _SPOT_RE = re.compile(
-    r"^DX\s+de\s+([A-Z0-9/\-#]+)\s*:\s+([\d.]+)\s+([A-Z0-9/]+)\s*(.*)",
+    r"^DX\s+de\s+([A-Z0-9/\-#]+)\s*:\s*([\d.]+)\s+([A-Z0-9/]+)\s*(.*)",
     re.IGNORECASE,
 )
 
@@ -64,7 +64,7 @@ _SPOT_RE_ALT = re.compile(
 # DX de OE3KLU-#: 28187.90  OE3XAC         CW     5 dB  14 WPM  BEACON  0032Z
 # Groups: (spotter_call, freq_kHz, dx_call) followed by mode, snr, speed, cq, time comment)
 _SPOT_RE_RBN = re.compile(
-    r"^DX\s+de\s+([A-Z0-9/\-#]+)\s*:\s+([\d.]+)\s+([A-Z0-9/]+)\s*(.*)",
+    r"^DX\s+de\s+([A-Z0-9/\-#]+)\s*:\s*([\d.]+)\s+([A-Z0-9/]+)\s*(.*)",
     re.IGNORECASE,
 )
 
