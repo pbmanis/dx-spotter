@@ -991,10 +991,19 @@ class DXSpotter:
         connected = (
             self._mqtt_listener.connected if self._mqtt_listener is not None else False
         )
-        if connected:
-            self.window.set_pskr_status(f"PSKR: {CONNECTED}", ok=True)
-        else:
+        if not connected:
             self.window.set_pskr_status(f"PSKR: {DISCONNECTED}", ok=None)
+            return
+        # Connected — warn (yellow) when the broker has been silent, which
+        # signals a connected-but-dead feed (e.g. a PSK Reporter MQTT outage)
+        # rather than a quiet band.
+        now = time.time()
+        no_msg_secs = self._config.pskr_no_spot_mins * 60
+        last_msg = self._mqtt_listener.last_message_time
+        if last_msg == 0.0 or (now - last_msg) > no_msg_secs:
+            self.window.set_pskr_status(f"PSKR: {CONNECTED} no data", ok="warn")
+        else:
+            self.window.set_pskr_status(f"PSKR: {CONNECTED}", ok=True)
 
     def _update_telnet_status(self) -> None:
         # Poll each cluster's connected property and update the T1-T4 status bar labels.
@@ -1026,21 +1035,22 @@ class DXSpotter:
         if self.window is None or self.wsjt_listener is None:
             return
         now = time.time()
+        port = self.wsjt_listener.port
         elapsed_hb = now - self._last_wsjt_heartbeat
         if self._last_wsjt_heartbeat == 0.0:
-            self.window.set_wsjt_status(f"WSJT-X: {CONNECTING}", ok=None)
+            self.window.set_wsjt_status(f"WSJT-X :{port} {CONNECTING}", ok=None)
         elif elapsed_hb >= 45:
             self.window.set_wsjt_status(
-                f"WSJT-X: no signal ({int(elapsed_hb)}s)", ok=False
+                f"WSJT-X :{port} no signal ({int(elapsed_hb)}s)", ok=False
             )
         else:
             # Connected — check whether any Decode packets have arrived recently.
             no_spot_secs = self._config.wsjt_no_spot_mins * 60
             last_dec = self.wsjt_listener.last_decode_time
             if last_dec == 0.0 or (now - last_dec) > no_spot_secs:
-                self.window.set_wsjt_status(f"WSJT-X: {CONNECTED}", ok="warn")
+                self.window.set_wsjt_status(f"WSJT-X :{port} {CONNECTED}", ok="warn")
             else:
-                self.window.set_wsjt_status(f"WSJT-X: {CONNECTED}", ok=True)
+                self.window.set_wsjt_status(f"WSJT-X :{port} {CONNECTED}", ok=True)
 
     def _on_call_busy(self, call: str) -> None:
         """Called from WSJT-X listener thread when a CQ caller enters a QSO."""
@@ -1630,7 +1640,7 @@ class DXSpotter:
             log_source=cfg.log_source,
             adif_path=self._current_adif_path,
             udp_address=cfg.udp_address,
-            udp_port=cfg.udp_port,
+            udp_port=cfg.wsjt_port,
             my_grid=self.my_grid,
             rx_grid_prefixes=cfg.rx_grid_prefixes,
             wsjt_reshow_secs=cfg.wsjt_reshow_secs,
@@ -1671,6 +1681,7 @@ class DXSpotter:
             pskr_port=cfg.pskr_port,
             pskr_service_name=cfg.pskr_service_name,
             pskr_reshow_secs=cfg.pskr_reshow_secs,
+            pskr_no_spot_mins=cfg.pskr_no_spot_mins,
             cty_path=str(cty_cache.cty_plist_path()),
             parent=self.window,
         )
@@ -1682,7 +1693,8 @@ class DXSpotter:
             self._reinit_cinfo()
 
         cfg.udp_address = dlg.udp_address
-        cfg.udp_port = dlg.udp_port
+        cfg.wsjt_port = dlg.udp_port
+        self.args.wsjt_port = dlg.udp_port
         self.my_grid = dlg.my_grid
         cfg.my_grid = dlg.my_grid
         self.window.set_station_info(self.args.call or "", self.my_grid)
@@ -1823,6 +1835,7 @@ class DXSpotter:
         cfg.pskr_port = dlg.pskr_port
         cfg.pskr_service_name = dlg.pskr_service_name
         cfg.pskr_reshow_secs = dlg.pskr_reshow_secs
+        cfg.pskr_no_spot_mins = dlg.pskr_no_spot_mins
         if pskr_changed:
             if self._mqtt_listener is not None:
                 self._mqtt_listener.stop()

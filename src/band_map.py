@@ -22,7 +22,14 @@ from typing import TYPE_CHECKING
 
 import pyqtgraph as pg
 from PyQt6.QtCore import QPointF, QTimer, Qt, pyqtSignal
-from PyQt6.QtWidgets import QHBoxLayout, QVBoxLayout, QPushButton, QWidget
+from PyQt6.QtGui import QCursor
+from PyQt6.QtWidgets import (
+    QHBoxLayout,
+    QVBoxLayout,
+    QPushButton,
+    QToolTip,
+    QWidget,
+)
 
 if TYPE_CHECKING:
     from adif_log import ADIFLog
@@ -265,6 +272,16 @@ _SSB_FREQ_OFFSETS: dict[str, float] = {
 }
 
 
+# Band-map SNR plot range (dB).  Station bars are clamped to the span
+# [_SNR_FLOOR, _SNR_CEILING]; the zone between _SNR_CEILING and _PLOT_TOP is
+# reserved for the rotated callsign labels so they never clip at the top edge.
+# Clamping matters for CW/RTTY skimmer spots, whose reported dB can exceed the
+# FT8-oriented ceiling.
+_SNR_FLOOR: float = -24.0
+_SNR_CEILING: float = 12.0
+_PLOT_TOP: float = 30.0
+
+
 # DXCC entity number for mainland US, excluded by the 'dxcc_only' filter —
 # matches spot_window._MAINLAND_US_DXCC.
 _MAINLAND_US_DXCC: int = 291
@@ -345,7 +362,7 @@ class BandMap(QWidget):
         # Y range: data occupies -24 to +12 dB; the extra headroom to 26 holds
         # the angled callsign labels for the tallest bars.  Y zoom/pan is
         # disabled so mouse wheel/drag only moves the frequency axis.
-        self._plot.setYRange(-24, 26, padding=0)
+        self._plot.setYRange(_SNR_FLOOR, _PLOT_TOP, padding=0)
         self._plot.plotItem.vb.setMouseEnabled(x=True, y=False)
 
         # Horizontal reference at SNR = 0
@@ -357,7 +374,8 @@ class BandMap(QWidget):
         # Subtle separator marking the top of the data region (y = 12 dB).
         # Labels for spots near the top extend into the zone above this line.
         self._ceil_line = pg.InfiniteLine(
-            pos=12, angle=0, pen=pg.mkPen("#303050", width=1, style=Qt.PenStyle.DotLine)
+            pos=_SNR_CEILING, angle=0,
+            pen=pg.mkPen("#303050", width=1, style=Qt.PenStyle.DotLine)
         )
         self._plot.addItem(self._ceil_line)
 
@@ -374,6 +392,7 @@ class BandMap(QWidget):
         self._max_age_secs: int = 30 * 60
         self.freq_map = []  # List of frequencies "in use" to help select an open spot.
         self._plot.scene().sigMouseClicked.connect(self._on_mouse_clicked)
+        self._plot.scene().sigMouseMoved.connect(self._on_mouse_moved)
 
         flush_timer = QTimer(self)
         flush_timer.timeout.connect(self._flush_and_redraw)
@@ -417,7 +436,7 @@ class BandMap(QWidget):
             size="9pt",
         )
         self._plot.enableAutoRange(axis="x")
-        self._plot.setYRange(-24, 26, padding=0)
+        self._plot.setYRange(_SNR_FLOOR, _PLOT_TOP, padding=0)
         self._update_zones()
         self._redraw()
 
@@ -574,9 +593,15 @@ class BandMap(QWidget):
             color = _MODE_COLORS.get(mode, _DEFAULT_COLOR)
             width = self._award_line_width(spot)
 
+            # Clamp the bar top to the ceiling so strong signals (notably
+            # high-dB CW/RTTY skimmer spots) do not push their labels above the
+            # plot and off the top edge; the label rises from here into the
+            # reserved zone between _SNR_CEILING and _PLOT_TOP.
+            bar_top = min(snr, _SNR_CEILING)
+
             line = pg.PlotCurveItem(
                 x=[freq_khz, freq_khz],
-                y=[-24.0, snr],  # bars always start at the plot floor
+                y=[_SNR_FLOOR, bar_top],  # bars always start at the plot floor
                 pen=pg.mkPen(color=color, width=width),
             )
             self._plot.addItem(line)
@@ -602,7 +627,7 @@ class BandMap(QWidget):
             # pre-rotation bbox at (freq_khz, snr) so the label rises from the
             # bar top into the label zone above y=12.
             label = pg.TextItem(text=call, color=color, angle=75, anchor=(0, 1.0))
-            label.setPos(freq_khz, snr)
+            label.setPos(freq_khz, bar_top)
             self._plot.addItem(label)
             self._plot_items.append(label)
 
@@ -687,6 +712,42 @@ class BandMap(QWidget):
                 "source": spot.get("source", "psk"),
             }
         )
+
+    def _on_mouse_moved(self, scene_pos: QPointF) -> None:
+        # Show a tooltip with the station details when hovering over a signal
+        # bar.  Lets the user read callsigns that the angled labels clip at the
+        # top edge of the plot.
+        vb = self._plot.plotItem.vb
+        if not vb.sceneBoundingRect().contains(scene_pos):
+            QToolTip.hideText()
+            return
+        freq_khz = vb.mapSceneToView(scene_pos).x()
+        # Convert 8 screen pixels to a kHz tolerance in data space.
+        p2 = vb.mapSceneToView(QPointF(scene_pos.x() + 8.0, scene_pos.y()))
+        tolerance = abs(p2.x() - freq_khz)
+        spot = self._nearest_spot(freq_khz, tolerance)
+        if spot is None:
+            QToolTip.hideText()
+            return
+        QToolTip.showText(QCursor.pos(), self._hover_text(spot), self._plot)
+
+    @staticmethod
+    def _hover_text(spot: dict) -> str:
+        # Build the multi-line hover tooltip for one station bar.
+        call = spot.get("call", "")
+        freq_khz = spot.get("abs_freq_hz", 0) / 1000.0
+        mode = spot.get("md", "")
+        rp = str(spot.get("rp", "")).strip()
+        country = spot.get("country", "")
+        detail = f"{freq_khz:.1f} kHz"
+        if mode:
+            detail += f"  {mode}"
+        if rp:
+            detail += f"  {rp} dB"
+        lines = [call, detail]
+        if country:
+            lines.append(country)
+        return "\n".join(lines)
 
     def _nearest_spot(self, freq_khz: float, tolerance_khz: float) -> dict | None:
         # Return the cache entry closest to freq_khz within tolerance_khz, or None.
