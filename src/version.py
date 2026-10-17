@@ -14,4 +14,4 @@ version for the whole project.  Everything else derives from it:
 To release a new version, edit this line and nothing else.
 """
 
-__version__: str = "0.3.5.0"
+__version__: str = "0.3.6.0"

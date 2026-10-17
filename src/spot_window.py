@@ -57,6 +57,7 @@ CALL_COL     = COLUMNS.index("DX Call")
 ENTITY_COL   = COLUMNS.index("Entity")
 REPORTER_COL = COLUMNS.index("Reporter")
 TIME_COL     = COLUMNS.index("Time")
+SNR_COL      = COLUMNS.index("SNR")
 
 # Separate role for the spot-action dict on CALL_COL (avoids collision with
 # the dxcc/band/mode dict stored in UserRole on the same cell).
@@ -208,6 +209,22 @@ class _AgeItem(QTableWidgetItem):
         other_ts = other.data(Qt.ItemDataRole.UserRole)
         if isinstance(my_ts, (int, float)) and isinstance(other_ts, (int, float)):
             return my_ts > other_ts   # larger timestamp = more recent = smaller age
+        return super().__lt__(other)
+
+
+class _SnrItem(QTableWidgetItem):
+    """SNR column item: displays ``"<snr> dB"``, sorts by the numeric SNR value.
+
+    Overrides ``__lt__`` so Qt's built-in sort compares the signed SNR number
+    stored in UserRole rather than the displayed text, which would order values
+    lexically (e.g. ``-7`` after ``-17``).
+    """
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        my_val = self.data(Qt.ItemDataRole.UserRole)
+        other_val = other.data(Qt.ItemDataRole.UserRole)
+        if isinstance(my_val, (int, float)) and isinstance(other_val, (int, float)):
+            return my_val < other_val
         return super().__lt__(other)
 
 
@@ -595,15 +612,27 @@ class SpotTable(QWidget):
             qsl_text,                                                        # QSL
         ]
 
+        try:
+            snr_val = float(str(spot['rp']).replace('+', ''))
+        except (ValueError, TypeError):
+            snr_val = 0.0
+
         wsjt = src == 'wsjt'
         for col, val in enumerate(values):
-            item = _AgeItem(val) if col == SPOT_AGE_COL else QTableWidgetItem(val)
+            if col == SPOT_AGE_COL:
+                item = _AgeItem(val)
+            elif col == SNR_COL:
+                item = _SnrItem(val)
+            else:
+                item = QTableWidgetItem(val)
             item.setBackground(bg)
             item.setForeground(fg)
             if wsjt:
                 item.setFont(self._italic_font)
             if col == SPOT_AGE_COL:
                 item.setData(Qt.ItemDataRole.UserRole, spot['unix_time'])
+            elif col == SNR_COL:
+                item.setData(Qt.ItemDataRole.UserRole, snr_val)
             elif col == CALL_COL:
                 item.setData(Qt.ItemDataRole.UserRole, {'dxcc': dxcc, 'band': band, 'mode': mode})
             elif col == TIME_COL:
