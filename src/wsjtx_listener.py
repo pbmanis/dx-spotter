@@ -26,7 +26,8 @@ Outgoing messages sent:
 Type aliases
 ------------
 SpotCallback
-    ``(dx_call, dx_grid, snr, df_hz, mode, band, unix_time, msg, delta_t) → None``
+    ``(dx_call, dx_grid, snr, df_hz, mode, band, unix_time, msg, delta_t,
+    abs_freq_hz, kind) → None``
 BusyCallback
     ``(call) → None``
 HeartbeatCallback
@@ -159,7 +160,7 @@ class _BinReader:
 
 
 # Signature: (dx_call, dx_grid, snr, df_hz, mode, band, unix_time, msg, delta_t, abs_freq_hz) -> None
-SpotCallback = Callable[[str, str, int, int, str, str, float, str, float, int], None]
+SpotCallback = Callable[[str, str, int, int, str, str, float, str, float, int, str], None]
 # Signature: (call) -> None  — called when a CQ caller is observed entering a QSO
 BusyCallback = Callable[[str], None]
 # Signature: () -> None  — called on first packet and on each incoming Heartbeat (type 0)
@@ -191,7 +192,7 @@ class WsjtxListener:
     _MSG_STATUS = 1
     _MSG_DECODE = 2
 
-    def __init__(self, port: int, decode_filter: str, my_call: str | None,
+    def __init__(self, port: int, my_call: str | None,
                  on_spot: SpotCallback,
                  on_call_busy: BusyCallback | None = None,
                  on_call_active: BusyCallback | None = None,
@@ -205,18 +206,15 @@ class WsjtxListener:
         port : int
             UDP port to listen on (must match WSJT-X Settings → Reporting →
             UDP Server port, typically ``2237``).
-        decode_filter : str
-            Initial decode filter: ``'CQ'`` (CQ calls only), ``'ALL'`` (every
-            decode), or ``'ME'`` (only decodes addressed to ``my_call``).
-            Case-insensitive; stored upper-cased.
         my_call : str or None
-            Operator's callsign, used by the ``'ME'`` filter.  ``None``
-            disables the ME filter.
+            Operator's callsign, used to tag decodes addressed to the operator
+            (kind ``'me'``).  ``None`` disables that tag.
         on_spot : SpotCallback
             Callable invoked (on the listener thread) for each new spot that
             passes the rate-limiting gate.
             Signature: ``(dx_call, dx_grid, snr, df_hz, mode, band,
-            unix_time, msg, delta_t) → None``.
+            unix_time, msg, delta_t, abs_freq_hz, kind) → None``, where
+            ``kind`` is ``'cq'``, ``'me'`` or ``'other'``.
         on_call_busy : BusyCallback or None, optional
             Called when a CQ caller is observed entering a QSO.
             Signature: ``(call) → None``.
@@ -234,7 +232,6 @@ class WsjtxListener:
             callsign (rate-limiting gate).  Default is ``300`` (5 minutes).
         """
         self.port = port
-        self.decode_filter = decode_filter.upper()  # 'CQ', 'ALL', 'ME'
         self.my_call = my_call.upper() if my_call else None
         self.on_spot = on_spot
         self.on_call_busy = on_call_busy
@@ -492,8 +489,6 @@ class WsjtxListener:
         :attr:`_call_times` maps each callsign to the Unix timestamp of the
         last time it was forwarded to the spot table.  Clearing it means every
         callsign will appear on the next decode regardless of ``reshow_secs``.
-        Called when the decode filter changes so the table is repopulated with
-        fresh spots.
         """
         self._call_times.clear()
 
@@ -692,11 +687,10 @@ class WsjtxListener:
                 msg      = r.utf8()         # keep verbatim — WSJT-X Reply needs exact match
                 low_conf = r.bool_()        # must match exactly in Reply
 
-                # With CQ filter: detect when a CQ caller enters a QSO so the
-                # spot table can remove them.  "K1XYZ G4XYZ -05" → G4XYZ busy.
+                # Detect when a CQ caller enters a QSO so the spot table can dim
+                # them.  "K1XYZ G4XYZ -05" → G4XYZ busy.
                 parts = msg.split()
-                if (self.decode_filter == 'CQ'
-                        and self.on_call_busy is not None
+                if (self.on_call_busy is not None
                         and len(parts) >= 2
                         and parts[0] != 'CQ'
                         and _looks_like_call(parts[0])
@@ -706,7 +700,7 @@ class WsjtxListener:
                 result = self._extract_call_grid(msg)
                 if result is None:
                     return
-                dx_call, dx_grid = result
+                dx_call, dx_grid, kind = result
 
                 # If the station is back to calling CQ, un-dim it in the table.
                 if parts[0] == 'CQ' and self.on_call_active is not None:
@@ -724,15 +718,16 @@ class WsjtxListener:
                     return   # can't compute band — skip spot table emission
 
                 now = time.time()
-                if now - self._call_times.get(dx_call, 0.0) < self._reshow_secs:
+                gate_key = f"{dx_call}|{kind}"   # gate each message kind separately
+                if now - self._call_times.get(gate_key, 0.0) < self._reshow_secs:
                     return   # suppress table update; latest decode already saved
-                self._call_times[dx_call] = now
+                self._call_times[gate_key] = now
 
                 freq_hz   = self._dial_freq + df
                 band      = freq_to_band(freq_hz)
                 midnight  = now - (now % 86400)
                 unix_time = midnight + ms / 1000.0
-                self.on_spot(dx_call, dx_grid, snr, df, mode, band, unix_time, msg, delta_t, freq_hz)
+                self.on_spot(dx_call, dx_grid, snr, df, mode, band, unix_time, msg, delta_t, freq_hz, kind)
 
             else:
                 # Log anything else WSJT-X sends so we can see all traffic
@@ -743,7 +738,10 @@ class WsjtxListener:
             name = self._MSG_NAMES.get(mtype, f'type{mtype}')
             print(f"WSJT-X packet parse error ({name}): {exc}")
 
-    def _extract_call_grid(self, message: str) -> tuple[str, str] | None:
+    def _extract_call_grid(self, message: str) -> tuple[str, str, str] | None:
+        # Return (spotted_call, grid, kind) for a decoded message, or None if
+        # no spottable station is found.  kind is 'cq' (CQ call), 'me' (message
+        # addressed to my_call) or 'other' (any other two-call message).
         parts = message.split()
         if not parts:
             return None
@@ -761,18 +759,15 @@ class WsjtxListener:
                     if i + 1 < len(parts) and _looks_like_grid(parts[i + 1])
                     else ''
                 )
-                return parts[i], grid
+                return parts[i], grid, 'cq'
             return None
 
         # Non-CQ messages: "<CALLED_CALL> <TX_CALL> <report/grid/...>"
         # parts[1] is the transmitting (spotted) station; parts[0] is the called station.
-        if self.decode_filter == 'ALL' and len(parts) >= 2 and _looks_like_call(parts[0]) and _looks_like_call(parts[1]):
+        if len(parts) >= 2 and _looks_like_call(parts[0]) and _looks_like_call(parts[1]):
             grid = parts[2] if len(parts) >= 3 and _looks_like_grid(parts[2]) else ''
-            return parts[1], grid
-
-        if self.decode_filter == 'ME' and self.my_call and len(parts) >= 2:
             called = parts[0].upper().rstrip('/P')
-            if called == self.my_call and _looks_like_call(parts[1]):
-                return parts[1], ''
+            kind = 'me' if self.my_call and called == self.my_call else 'other'
+            return parts[1], grid, kind
 
         return None

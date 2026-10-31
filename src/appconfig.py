@@ -59,6 +59,9 @@ class AppConfig:
     max_spot_age : int
         Remove spot table rows older than this many minutes.  ``0`` keeps spots
         forever.
+    enable_skimmer_spots : bool
+        Show spots whose reporter callsign ends in ``-#`` (CW/RTTY skimmer
+        reports).  Default ``False`` (skimmer spots are filtered out).
     wsjt_enabled : bool
         Whether to start the WSJT-X UDP listener on launch.
     wsjt_port : int
@@ -210,6 +213,7 @@ class AppConfig:
     decode_filter: str = "CQ"
     max_range: int = 0
     max_spot_age: int = 30
+    enable_skimmer_spots: bool = False
     wsjt_enabled: bool = True
     wsjt_port: int = 2237
     wsjt_show_decodes: bool = True
@@ -319,6 +323,9 @@ def load_config() -> AppConfig:
     cfg.decode_filter = str(filt.get("decode_filter", cfg.decode_filter))
     cfg.max_range = int(filt.get("max_range", cfg.max_range))
     cfg.max_spot_age = int(filt.get("max_spot_age", cfg.max_spot_age))
+    cfg.enable_skimmer_spots = bool(
+        filt.get("enable_skimmer_spots", cfg.enable_skimmer_spots)
+    )
     cfg.wsjt_enabled = bool(filt.get("wsjt_enabled", cfg.wsjt_enabled))
     cfg.wsjt_port = int(filt.get("wsjt_port", cfg.wsjt_port))
     # Migrate from the pre-unification [network].udp_port key: older builds let
@@ -429,6 +436,7 @@ mode          = "{cfg.mode}"
 decode_filter = "{cfg.decode_filter}"
 max_range     = {cfg.max_range}
 max_spot_age  = {cfg.max_spot_age}
+enable_skimmer_spots = {"true" if cfg.enable_skimmer_spots else "false"}
 wsjt_enabled       = {"true" if cfg.wsjt_enabled else "false"}
 wsjt_port          = {cfg.wsjt_port}
 wsjt_show_decodes = {"true" if cfg.wsjt_show_decodes else "false"}

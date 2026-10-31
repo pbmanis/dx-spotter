@@ -31,6 +31,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from spot_window import DataFilter
+
 if TYPE_CHECKING:
     from adif_log import ADIFLog
 
@@ -389,6 +391,7 @@ class BandMap(QWidget):
         self._adif_log: ADIFLog | None = None
         self._criterion: str = "mixed"
         self._display_filter: str = "all"
+        self._data_filter: DataFilter = DataFilter()
         self._max_age_secs: int = 30 * 60
         self.freq_map = []  # List of frequencies "in use" to help select an open spot.
         self._plot.scene().sigMouseClicked.connect(self._on_mouse_clicked)
@@ -415,6 +418,17 @@ class BandMap(QWidget):
         """Remove all spots from the cache and clear the plot."""
         self._pending.clear()
         self._spot_cache.clear()
+        self._redraw()
+
+    def set_data_filter(self, data_filter: DataFilter) -> None:
+        """Apply the data filters (mode, range, decode, skimmer) and redraw.
+
+        Parameters
+        ----------
+        data_filter : DataFilter
+            The new filter settings; spots are hidden, not discarded.
+        """
+        self._data_filter = data_filter
         self._redraw()
 
     def set_band(self, band: str | None) -> None:
@@ -485,6 +499,7 @@ class BandMap(QWidget):
             Spots older than this are dropped on the next flush cycle.
         """
         self._max_age_secs = minutes * 60
+        self._flush_and_redraw()
 
     # -- private: zone shading & zoom -----------------------------------------
 
@@ -549,7 +564,13 @@ class BandMap(QWidget):
         for spot in self._pending:
             if self._max_age_secs > 0 and now - spot.get("unix_time", now) > self._max_age_secs:
                 continue
-            self._spot_cache[spot["call"]] = spot
+            # Accumulate WSJT-X message kinds per call (for the decode filter);
+            # copy so the dict shared with the spot table is not mutated.
+            prev = self._spot_cache.get(spot["call"], {})
+            kinds = set(prev.get("kinds", set()))
+            if spot.get("wsjt_kind"):
+                kinds.add(spot["wsjt_kind"])
+            self._spot_cache[spot["call"]] = {**spot, "kinds": kinds}
         self._pending.clear()
 
         if self._max_age_secs > 0:
@@ -633,7 +654,12 @@ class BandMap(QWidget):
 
     def _spot_is_visible(self, spot: dict) -> bool:
         # Mirror SpotTable._row_is_hidden logic: return True when the spot
-        # should be plotted under the current display filter.
+        # should be plotted under the current data and display filters.
+        if self._data_filter.hides(
+            spot.get("md", ""), spot.get("range", 0), spot.get("rc", ""),
+            spot.get("source", ""), spot.get("kinds", set()),
+        ):
+            return False
         if self._display_filter == "all":
             return True
         dxcc = spot.get("dxcc", -1)

@@ -5,7 +5,8 @@ combines a pyqtgraph :class:`~pyqtgraph.dockarea.DockArea` layout with:
 
 * a left dock containing a :class:`~pyqtgraph.parametertree.ParameterTree`
   (band / mode / range / ADIF path controls), award-criteria radio buttons,
-  display-filter radio buttons, a live report counter panel, and action buttons.
+  display-filter radio buttons, and a live report counter panel.
+  Actions live in the menu bar (File, Mode, Preferences).
 * a right dock containing the :class:`~spot_window.SpotTable`.
 
 All inter-component communication uses Qt signals so that MQTT / WSJT-X
@@ -15,12 +16,12 @@ import argparse
 from datetime import datetime, timezone
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApplication,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QApplication,
     QGroupBox, QFormLayout, QLabel, QRadioButton, QButtonGroup,
     QTableWidget, QTableWidgetItem, QHeaderView, QToolBar, QSizePolicy,
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer
-from PyQt6.QtGui import QFontDatabase
+from PyQt6.QtGui import QAction, QFontDatabase, QKeySequence
 
 from version import __version__
 
@@ -28,7 +29,7 @@ from pyqtgraph.dockarea import DockArea, Dock
 from pyqtgraph.parametertree import Parameter, ParameterTree
 
 from band_map import BandMap
-from spot_window import SpotTable, make_app_icon  # re-export make_app_icon
+from spot_window import DataFilter, SpotTable, make_app_icon  # re-export make_app_icon
 
 
 _BANDS = ['All', '160m', '80m', '60m', '40m', '30m', '20m',
@@ -78,7 +79,6 @@ class MainWindow(QMainWindow):
           column (emits :attr:`criterion_changed`).
         * Display Filter radio group — hides/shows rows by DXCC status.
         * Reports panel — live PSK Reporter / WSJT-X / total spot counts.
-        * Buttons: Restart, Settings, Quit.
 
     Right dock (remainder)
         * :class:`~spot_window.SpotTable`.
@@ -95,7 +95,7 @@ class MainWindow(QMainWindow):
     call_active : pyqtSignal(str)
         The previously busy callsign is calling CQ again; restores full colors.
     restart_requested : pyqtSignal()
-        Restart button clicked → :meth:`~DXSpotter._restart`.
+        Restart menu item chosen → :meth:`~DXSpotter._restart`.
     settings_changed : pyqtSignal(dict)
         Any parameter-tree value changed → :meth:`~DXSpotter._apply_settings`.
     criterion_changed : pyqtSignal(str)
@@ -103,18 +103,18 @@ class MainWindow(QMainWindow):
     spot_activated : pyqtSignal(dict)
         Spot row double-clicked → :meth:`~DXSpotter._on_spot_activated`.
     settings_requested : pyqtSignal()
-        Settings button clicked → :meth:`~DXSpotter._open_settings`.
+        Preferences menu item chosen → :meth:`~DXSpotter._open_settings`.
     """
 
     new_spot          = pyqtSignal(dict)   # MQTT/WSJT-X thread → table (thread-safe)
     call_busy         = pyqtSignal(str)    # WSJT-X thread → dim call in table
     call_active       = pyqtSignal(str)    # WSJT-X thread → undim call in table
-    restart_requested  = pyqtSignal()      # Restart button → DXSpotter
+    restart_requested  = pyqtSignal()      # File → Restart → DXSpotter
     settings_changed   = pyqtSignal(dict) # any param change → DXSpotter
     criterion_changed  = pyqtSignal(str)  # award criteria radio button → DXSpotter
     spot_activated     = pyqtSignal(dict) # double-click on spot row → DXSpotter
-    settings_requested = pyqtSignal()     # Settings button → DXSpotter
-    reload_log_requested = pyqtSignal()   # Reload Log button → DXSpotter
+    settings_requested = pyqtSignal()     # Preferences → DXSpotter
+    reload_log_requested = pyqtSignal()   # File → Reload Log → DXSpotter
 
     def __init__(self, initial_args: argparse.Namespace,
                  initial_criterion: str = 'mixed',
@@ -271,33 +271,6 @@ class MainWindow(QMainWindow):
         rpt_layout.addRow("Telnet:",       self._lbl_telnet)
         rpt_layout.addRow("Total:",        self._lbl_total)
 
-        # ── Restart / Reload Log / Settings / Quit / Laptop Mode buttons ─────
-        btn_restart    = QPushButton("Restart")
-        btn_reload_log = QPushButton("Reload Log")
-        btn_settings   = QPushButton("Settings")
-        btn_quit       = QPushButton("Quit")
-        btn_laptop     = QPushButton("Laptop Mode")
-        btn_laptop.setCheckable(True)
-        btn_restart.clicked.connect(lambda: self.restart_requested.emit())
-        btn_reload_log.clicked.connect(lambda: self.reload_log_requested.emit())
-        btn_settings.clicked.connect(lambda: self.settings_requested.emit())
-        btn_quit.clicked.connect(lambda: QApplication.instance().quit())  # type: ignore[union-attr]
-        btn_laptop.toggled.connect(
-            lambda checked: btn_laptop.setText(
-                "Laptop Mode: ON" if checked else "Laptop Mode: OFF"
-            )
-        )
-
-        btn_row1 = QHBoxLayout()
-        btn_row1.addWidget(btn_restart)
-        btn_row1.addWidget(btn_settings)
-        btn_row1.addWidget(btn_laptop)
-
-
-        btn_row2 = QHBoxLayout()
-        btn_row2.addWidget(btn_reload_log)
-        btn_row2.addWidget(btn_quit)
-
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(2, 2, 2, 2)
@@ -306,14 +279,12 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(criteria_box)
         left_layout.addWidget(display_filter_box)
         left_layout.addWidget(reports_box)
-        left_layout.addLayout(btn_row1)
-        left_layout.addLayout(btn_row2)
         left_dock.addWidget(left_widget)
 
         # ── Spot table ────────────────────────────────────────────────────────
         self._spot_table = SpotTable()
-        btn_laptop.toggled.connect(self._spot_table.set_laptop_mode)
         right_dock.addWidget(self._spot_table)
+        self._build_menus()
         self.new_spot.connect(self._spot_table.add_spot)
         self.call_busy.connect(self._spot_table.dim_call)
         self.call_active.connect(self._spot_table.undim_call)
@@ -350,6 +321,45 @@ class MainWindow(QMainWindow):
             _hdr.setStretchLastSection(False)
         paper_dock.addWidget(self._paper_table)
 
+    # -- menu bar -------------------------------------------------------------
+
+    def _build_menus(self) -> None:
+        # Build the menu bar.  On macOS Qt moves the Preferences and Quit
+        # actions (by menu role) into the application menu.
+        menu_bar = self.menuBar()
+        assert menu_bar is not None
+
+        act_preferences = QAction("Preferences…", self)
+        act_preferences.setMenuRole(QAction.MenuRole.PreferencesRole)
+        act_preferences.setShortcut(QKeySequence.StandardKey.Preferences)
+        act_preferences.triggered.connect(lambda: self.settings_requested.emit())
+
+        act_reload = QAction("Reload Log", self)
+        act_reload.triggered.connect(lambda: self.reload_log_requested.emit())
+        act_restart = QAction("Restart", self)
+        act_restart.triggered.connect(lambda: self.restart_requested.emit())
+        act_quit = QAction("Quit", self)
+        act_quit.setMenuRole(QAction.MenuRole.QuitRole)
+        act_quit.setShortcut(QKeySequence.StandardKey.Quit)
+        # aboutToQuit (connected in DXSpotter) writes the config on the way out
+        act_quit.triggered.connect(lambda: QApplication.instance().quit())  # type: ignore[union-attr]
+
+        file_menu = menu_bar.addMenu("File")
+        assert file_menu is not None
+        file_menu.addAction(act_reload)
+        file_menu.addAction(act_restart)
+        file_menu.addSeparator()
+        file_menu.addAction(act_quit)
+        file_menu.addAction(act_preferences)
+
+        # Laptop mode is intentionally not persisted in the config.
+        act_laptop = QAction("Laptop Mode", self)
+        act_laptop.setCheckable(True)
+        act_laptop.toggled.connect(self._spot_table.set_laptop_mode)
+        mode_menu = menu_bar.addMenu("Mode")
+        assert mode_menu is not None
+        mode_menu.addAction(act_laptop)
+
     # -- parameter tree -------------------------------------------------------
 
     @staticmethod
@@ -378,6 +388,9 @@ class MainWindow(QMainWindow):
                 dict(name='Max Spot Age (min)', type='int',
                      value=getattr(args, 'max_spot_age', 30), min=0,
                      tip='Remove spots older than this many minutes; 0 = keep forever'),
+                dict(name='Enable Skimmer Spots', type='bool',
+                     value=getattr(args, 'enable_skimmer_spots', False),
+                     tip='Show spots from skimmer reporters (callsign ending in -#)'),
             ]),
         ])
 
@@ -393,6 +406,7 @@ class MainWindow(QMainWindow):
             'range':        range_km if range_km > 0 else None,
             'wsjt_filter':  df.child('Decode Filter').value(),
             'max_spot_age': df.child('Max Spot Age (min)').value(),
+            'enable_skimmer_spots': df.child('Enable Skimmer Spots').value(),
         }
 
     def _on_params_changed(self, _root, changes) -> None:
@@ -466,6 +480,17 @@ class MainWindow(QMainWindow):
         """Clear all rows from the spot table and all spots from the bandmap."""
         self._spot_table.clear()
         self._band_map.clear()
+
+    def set_data_filter(self, data_filter: DataFilter) -> None:
+        """Push the data filters (mode, range, decode, skimmer) to the table and bandmap.
+
+        Parameters
+        ----------
+        data_filter : DataFilter
+            Filter settings; spots are hidden or shown in place, never cleared.
+        """
+        self._spot_table.set_data_filter(data_filter)
+        self._band_map.set_data_filter(data_filter)
 
     def restyle_spots(self, adif_log, criterion: str) -> None:
         """Push a new ADIF log and award criterion into the spot table and bandmap and restyle.

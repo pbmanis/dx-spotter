@@ -23,6 +23,7 @@ _MAINLAND_US_DXCC : int
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import os
 import re
 import time
@@ -128,6 +129,83 @@ def make_app_icon() -> QIcon:
                        _Qt.TransformationMode.SmoothTransformation)
         )
     return icon
+
+
+def is_skimmer_reporter(reporter: str) -> bool:
+    """Return whether a reporter callsign belongs to a skimmer.
+
+    Parameters
+    ----------
+    reporter : str
+        Reporter (spotter) callsign as received from the spot source.
+
+    Returns
+    -------
+    bool
+        ``True`` if the callsign ends in ``-#`` (skimmer convention).
+    """
+    return reporter.strip().endswith("-#")
+
+
+@dataclass
+class DataFilter:
+    """Display-time data filters shared by the spot table and the bandmap.
+
+    The filters hide spots without discarding them, so they can be changed
+    dynamically.
+
+    Attributes
+    ----------
+    modes : frozenset of str or None
+        Modes to show; ``None`` shows every mode.
+    max_range_km : int or None
+        Hide spots whose range exceeds this many km; ``None`` or ``0`` shows all.
+    decode_filter : str
+        WSJT-X decode filter: ``'CQ'``, ``'ALL'`` or ``'ME'``.  Applies to
+        WSJT-X spots only.
+    show_skimmers : bool
+        Show spots whose reporter callsign ends in ``-#``.
+    """
+
+    modes: frozenset[str] | None = None
+    max_range_km: int | None = None
+    decode_filter: str = 'CQ'
+    show_skimmers: bool = False
+
+    def hides(self, mode: str, range_km: int, reporter: str, source: str,
+              kinds: set[str]) -> bool:
+        """Return whether a spot with these properties should be hidden.
+
+        Parameters
+        ----------
+        mode : str
+            Spot mode (e.g. ``'FT8'``).
+        range_km : int
+            Distance in km used by the range filter (``0`` if unknown).
+        reporter : str
+            Reporter callsign.
+        source : str
+            Spot source tag (``'psk'``, ``'wsjt'``, ``'telnet1'``, ...).
+        kinds : set of str
+            WSJT-X message kinds (``'cq'``, ``'me'``, ``'other'``) seen for
+            this call.
+
+        Returns
+        -------
+        bool
+            ``True`` if any active filter hides the spot.
+        """
+        if self.modes is not None and mode not in self.modes:
+            return True
+        if self.max_range_km and range_km > self.max_range_km:
+            return True
+        if not self.show_skimmers and is_skimmer_reporter(reporter):
+            return True
+        if source == 'wsjt':
+            wanted = {'CQ': 'cq', 'ME': 'me'}.get(self.decode_filter.upper())
+            if wanted is not None and wanted not in kinds:
+                return True
+        return False
 
 
 def _format_age(seconds: int) -> str:
@@ -326,6 +404,7 @@ class SpotTable(QWidget):
         self._selected_call: str = ''
         self._max_age_secs: int = 30 * 60  # 0 = no expiry
         self._laptop_mode: bool = False
+        self._data_filter: DataFilter = DataFilter()
 
     # -- public interface -----------------------------------------------------
 
@@ -444,6 +523,20 @@ class SpotTable(QWidget):
             expiry (rows are kept indefinitely).
         """
         self._max_age_secs = minutes * 60
+        self._update_ages()
+
+    def set_data_filter(self, data_filter: DataFilter) -> None:
+        """Apply the data filters (mode, range, decode, skimmer) to the shown rows.
+
+        Rows are hidden or shown in place; no spots are discarded.
+
+        Parameters
+        ----------
+        data_filter : DataFilter
+            The new filter settings.
+        """
+        self._data_filter = data_filter
+        self._apply_display_filter()
 
     def set_display_filter(self, filter_str: str) -> None:
         """Apply a row-visibility filter to the spot table.
@@ -482,13 +575,18 @@ class SpotTable(QWidget):
             self.table.setRowHidden(row, self._row_is_hidden(row))
 
     def _row_is_hidden(self, row: int) -> bool:
-        if self._display_filter == 'all':
-            return False
         call_item = self.table.item(row, CALL_COL)
         if call_item is None:
             return False
         data = call_item.data(Qt.ItemDataRole.UserRole)
         if not isinstance(data, dict):
+            return False
+        if self._data_filter.hides(
+            data.get('mode', ''), data.get('range', 0), data.get('reporter', ''),
+            data.get('source', ''), data.get('kinds', set()),
+        ):
+            return True
+        if self._display_filter == 'all':
             return False
         dxcc = data.get('dxcc', -1)
         band = data.get('band', '')
@@ -526,10 +624,17 @@ class SpotTable(QWidget):
         # in arrival order — reports for the same call can land in this batch
         # out of chronological order.
         deduped: dict[str, dict] = {}
+        kinds: dict[str, set[str]] = {}
         for spot in spots:
+            if spot.get('wsjt_kind'):
+                kinds.setdefault(spot['call'], set()).add(spot['wsjt_kind'])
             existing = deduped.get(spot['call'])
             if existing is None or spot.get('unix_time', 0) >= existing.get('unix_time', 0):
                 deduped[spot['call']] = spot
+        # Copy before adding kinds: the same dict is shared with the bandmap
+        deduped = {
+            call: {**spot, 'kinds': kinds.get(call, set())} for call, spot in deduped.items()
+        }
         self.table.setSortingEnabled(False)
         self.table.setUpdatesEnabled(False)
         for spot in deduped.values():
@@ -570,10 +675,15 @@ class SpotTable(QWidget):
         bg = QColor(bg_hex)
         fg = QColor(fg_hex)
 
-        # Remove existing row for this call so it reappears at the top
+        # Remove existing row for this call so it reappears at the top,
+        # carrying over the WSJT-X message kinds seen for it so far
+        kinds: set[str] = set(spot.get('kinds', set()))
         for r in range(self.table.rowCount() - 1, -1, -1):
             existing = self.table.item(r, CALL_COL)
             if existing is not None and existing.text() == spot['call']:
+                old_data = existing.data(Qt.ItemDataRole.UserRole)
+                if isinstance(old_data, dict):
+                    kinds |= old_data.get('kinds', set())
                 self.table.removeRow(r)
 
         self.table.insertRow(0)
@@ -634,7 +744,10 @@ class SpotTable(QWidget):
             elif col == SNR_COL:
                 item.setData(Qt.ItemDataRole.UserRole, snr_val)
             elif col == CALL_COL:
-                item.setData(Qt.ItemDataRole.UserRole, {'dxcc': dxcc, 'band': band, 'mode': mode})
+                item.setData(Qt.ItemDataRole.UserRole, {
+                    'dxcc': dxcc, 'band': band, 'mode': mode, 'range': range_km,
+                    'reporter': spot['rc'], 'source': src, 'kinds': kinds,
+                })
             elif col == TIME_COL:
                 item.setData(Qt.ItemDataRole.UserRole, ts)
             elif col == ENTITY_COL:

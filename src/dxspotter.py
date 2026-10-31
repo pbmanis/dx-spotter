@@ -29,6 +29,7 @@ from main_window import MainWindow, make_app_icon
 from mqtt_listener import MqttListener
 from rigctld_client import RigctldClient, is_available as rigctld_available
 from settings_dialog import SettingsDialog
+from spot_window import DataFilter
 from telnet_cluster import TelnetCluster
 from wsjtx_listener import WsjtxListener, freq_to_band
 
@@ -314,37 +315,37 @@ class DXSpotter:
 
         The topic uses MQTT wildcards (``+`` = any single level, ``#`` = any
         subtree) so the broker delivers only spots that match the configured
-        band, mode, and callsign.
+        band and callsign.  The mode is always a wildcard: the mode filter is
+        applied at display time so it can change without a resubscribe.
 
         Returns
         -------
         str
             MQTT topic in the PSK Reporter v2 filter format:
-            ``pskr/filter/v2/{band}/{mode}/+/+/+/+/+/{call}/#``.
+            ``pskr/filter/v2/{band}/+/+/+/+/+/+/{call}/#``.
         """
         assert self.args is not None
         band = self.args.band if self.args.band else "+"
-        mode = self.args.mode.upper() if self.args.mode else "+"
-        if mode in ["FC", "CS", "FCS"]:
-            mode = "+"
         call = self.args.call.upper() if self.args.call else "+"
-        return f"pskr/filter/v2/{band}/{mode}/+/+/+/+/+/{call}/#"
+        return f"pskr/filter/v2/{band}/+/+/+/+/+/+/{call}/#"
 
     # -- settings / restart (called from Qt main thread via signals) ----------
 
     def _apply_settings(self, settings: dict) -> None:
         # Apply a settings dict emitted by MainWindow.settings_changed.
-        # Resubscribes MQTT if topic changed, clears the table if band/mode/range
-        # changed, restarts or reconfigures the WSJT-X listener as needed.
+        # Resubscribes MQTT and clears the table if the band changed.  Mode,
+        # range, decode filter and skimmer settings are display-time filters
+        # (no clear); the WSJT-X listener is reconfigured as needed.
         assert self.args is not None
 
         old_band = self.args.band
-        old_mode = self.args.mode
-        old_range = self.args.range
 
         self.args.band = settings["band"]
         self.args.mode = settings["mode"]
         self.args.range = settings["range"]
+        self.args.wsjt_filter = settings["wsjt_filter"]
+        self.args.enable_skimmer_spots = settings["enable_skimmer_spots"]
+        self._push_data_filter()
 
         # Apply max spot age to table immediately
         if self.window is not None:
@@ -356,12 +357,8 @@ class DXSpotter:
             self.topic = new_topic
             self._mqtt_listener.resubscribe(self.topic)
 
-        # Clear table and reset counters when display-affecting params change
-        if (
-            self.args.band != old_band
-            or self.args.mode != old_mode
-            or self.args.range != old_range
-        ):
+        # Clear table and reset counters when the band changes
+        if self.args.band != old_band:
             self.psk_counter = 0
             self.wsjt_counter = 0
             self.telnet1_counter = 0
@@ -389,7 +386,6 @@ class DXSpotter:
         # when the port changes; for filter/call changes, update in place to
         # avoid a race where the old socket still holds the port for up to 1 s.
         want_wsjt = self._config.wsjt_enabled
-        new_filter = settings["wsjt_filter"]
         new_port = self._config.wsjt_port
         new_call = self.args.call
         if want_wsjt:
@@ -399,7 +395,6 @@ class DXSpotter:
                 self._last_wsjt_heartbeat = 0.0
                 self.wsjt_listener = WsjtxListener(
                     port=new_port,
-                    decode_filter=new_filter,
                     my_call=new_call,
                     on_spot=self._on_wsjt_spot,
                     on_call_busy=self._on_call_busy,
@@ -409,20 +404,26 @@ class DXSpotter:
                 )
                 self.wsjt_listener.start()
             else:
-                old_filter = self.wsjt_listener.decode_filter
-                self.wsjt_listener.decode_filter = new_filter.upper()
                 self.wsjt_listener.my_call = new_call.upper() if new_call else None
-                if old_filter != self.wsjt_listener.decode_filter:
-                    # Filter change: reset the rate-limiting gate so spots that
-                    # match the new filter re-appear even if recently seen.
-                    self.wsjt_listener.reset_call_times()
-                    self.wsjt_counter = 0
-                    if self.window is not None:
-                        self.window.clear_table()
         else:
             if self.wsjt_listener is not None:
                 self.wsjt_listener.stop()
                 self.wsjt_listener = None
+
+    def _push_data_filter(self) -> None:
+        # Send the current mode / range / decode / skimmer settings to the
+        # window, which hides or shows rows in place without clearing them.
+        assert self.args is not None
+        if self.window is None:
+            return
+        self.window.set_data_filter(
+            DataFilter(
+                modes=self._MODE_FILTER.get((self.args.mode or "").upper()),
+                max_range_km=self.args.range,
+                decode_filter=self.args.wsjt_filter or "CQ",
+                show_skimmers=self.args.enable_skimmer_spots,
+            )
+        )
 
     def _restart(self) -> None:
         """Clear the table and re-subscribe to the current topic."""
@@ -471,41 +472,6 @@ class DXSpotter:
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(payload["t"]))
         scall = payload["sc"].replace(".", "/")
 
-        if self.args.mode is not None:
-            match self.args.mode.upper():
-                case "FT8":
-                    if payload["md"] != "FT8":
-                        return
-                case "FT4":
-                    if payload["md"] != "FT4":
-                        return
-                case "FT2":
-                    if payload["md"] != "FT2":
-                        return
-                case "CW":
-                    if payload["md"] != "CW":
-                        return
-                case "SSB":
-                    if payload["md"] != "SSB":
-                        return
-                case "FT":
-                    if payload["md"] not in ["FT4", "FT8", "FT2"]:
-                        return
-                case "FC":
-                    if payload["md"] not in ["CW", "FT4", "FT8", "FT2"]:
-                        return
-                case "FCS":
-                    if payload["md"] not in ["CW", "FT4", "FT8", "FT2", "SSB"]:
-                        return
-                case "CS":
-                    if payload["md"] not in ["CW", "SSB"]:
-                        return
-                case "RTTY":
-                    if payload["md"] != "RTTY":
-                        return
-                case _:
-                    return
-
         if payload["md"] == "CW":
             colorline = Fore.GREEN
         elif payload["md"] in ["FT4", "FT8", "FT2"]:
@@ -538,8 +504,6 @@ class DXSpotter:
             distance = int(qth_distance(payload["sl"], payload["rl"]))
             range_km = int(qth_distance(self.my_grid, payload["rl"]))
         except Exception:
-            return
-        if self.args.range is not None and range_km > self.args.range:
             return
 
         if payload["rp"] is None:
@@ -604,6 +568,7 @@ class DXSpotter:
         msg: str = "",
         delta_t: float = 0.0,
         abs_freq_hz: int = 0,
+        kind: str = "cq",
     ) -> None:
         # Called from the WsjtxListener background thread when a new decode
         # passes the RESHOW_SECS gate. No range filter is applied: we decoded
@@ -612,17 +577,6 @@ class DXSpotter:
         assert self.args is not None
         if not self._config.wsjt_show_decodes:
             return
-
-        # Apply the mode filter so WSJT-X decodes honor the selected mode
-        # (e.g. a CW filter must not display FT8 decodes).
-        if self.args.mode is not None:
-            allowed = self._MODE_FILTER.get(self.args.mode.upper())
-            if allowed is not None and mode not in allowed:
-                if self.args.terminal:
-                    print(
-                        f"WSJT-X spot dropped: mode {mode!r} not in {self.args.mode!r} filter"
-                    )
-                return
 
         self.wsjt_counter += 1
 
@@ -670,11 +624,12 @@ class DXSpotter:
                     "source": "wsjt",
                     "msg": msg,
                     "delta_t": delta_t,
+                    "wsjt_kind": kind,  # 'cq' / 'me' / 'other' — decode filter
                     "abs_freq_hz": abs_freq_hz,  # absolute Hz — used by BandMap
                 }
             )
 
-    # Mode → allowed set, used in both PSK and telnet mode filters
+    # Mode filter name → set of displayed modes (see DataFilter.modes)
     _MODE_FILTER: dict[str, frozenset[str]] = {
         "FT8": frozenset({"FT8"}),
         "FT4": frozenset({"FT4"}),
@@ -696,16 +651,6 @@ class DXSpotter:
         call = raw["call"]
         freq_hz = raw["abs_freq_hz"]
         mode = raw.get("md", "")
-
-        # Apply mode filter
-        if self.args.mode is not None:
-            allowed = self._MODE_FILTER.get(self.args.mode.upper())
-            if allowed is not None and mode not in allowed:
-                if self.args.terminal:
-                    print(
-                        f"telnet spot dropped: mode {mode!r} not in {self.args.mode!r} filter"
-                    )
-                return
 
         band = freq_to_band(freq_hz)
         if not band:
@@ -732,20 +677,13 @@ class DXSpotter:
             return
 
         # Look up spotter lat/lon from FCC DB and compute distance from operator.
-        # Falls back to 0 (filter bypassed) when the call is not in the DB yet.
+        # Falls back to 0 (range filter bypassed) when the call is not in the DB yet.
         spotter_pos = fcc_db.lookup_location(spotter)
         if spotter_pos is not None:
             op_lat, op_lon = fcc_db.grid_to_latlon(self.my_grid)
             range_km = int(fcc_db.haversine_km(op_lat, op_lon, *spotter_pos))
         else:
             range_km = 0
-        if self.args.range is not None and range_km > self.args.range > 0:
-            if self.args.terminal:
-                print(
-                    f"telnet spot dropped: spotter {spotter} out of range ({range_km} km)"
-                )
-            return
-
         dxcc = self.get_dxcc(call)
         # Drop cluster spots whose callsign cannot be resolved to a DXCC entity.
         # Clusters occasionally deliver corrupted or mistyped calls (e.g. a
@@ -1322,6 +1260,7 @@ class DXSpotter:
         # Merge: CLI wins over config when explicitly provided.
         cli.my_grid = cfg.my_grid
         cli.max_spot_age = cfg.max_spot_age
+        cli.enable_skimmer_spots = cfg.enable_skimmer_spots
         cli.band = cli.band or cfg.band
         cli.mode = cli.mode or cfg.mode
         cli.range = cli.range if cli.range is not None else cfg.max_range
@@ -1392,6 +1331,7 @@ class DXSpotter:
         self.window._spot_table.spots_expired.connect(self._on_spots_expired)
         self.window.restyle_spots(self.adif_log, self._criterion)
         self.window.set_max_spot_age(cfg.max_spot_age)
+        self._push_data_filter()
         self.window.set_log_info(self._log_info_text(cfg, self.adif_log))
         self.window.set_station_info(self.args.call or "", self.my_grid)
         self.window.update_paper_only_list(self._build_paper_only_list(self.adif_log))
@@ -1447,7 +1387,6 @@ class DXSpotter:
         if self.args.wsjt:
             self.wsjt_listener = WsjtxListener(
                 port=self.args.wsjt_port,
-                decode_filter=self.args.wsjt_filter,
                 my_call=self.args.call,
                 on_spot=self._on_wsjt_spot,
                 on_call_busy=self._on_call_busy,
@@ -1573,6 +1512,7 @@ class DXSpotter:
         cfg.decode_filter = s.get("wsjt_filter", cfg.decode_filter)
         cfg.max_range = s.get("range") or 0
         cfg.max_spot_age = s.get("max_spot_age", cfg.max_spot_age)
+        cfg.enable_skimmer_spots = s.get("enable_skimmer_spots", cfg.enable_skimmer_spots)
         cfg.criterion = self.window.get_criterion()
         cfg.display_filter = self.window.get_display_filter()
         save_config(cfg)
