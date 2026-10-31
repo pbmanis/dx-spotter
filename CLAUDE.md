@@ -6,7 +6,7 @@ Amateur radio spot aggregator for DX hunting. Subscribes to PSK Reporter via MQT
 
 ##
 - always re-read this file before beginning work on a new request.
-- format code with black, and use pep-8 style when generating new code blocks. 
+- format code with ruff (see ruff.toml), and use pep-8 style when generating new code blocks. 
 - Never perform git actions.
 - Never delete a file; ask me to delete it manually.
 - Create docstrings using the numpy format, in preparation for Sphinx to generate the documentation.
