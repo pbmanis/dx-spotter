@@ -2004,3 +2004,68 @@ FILES CHANGED (this session — complete list)
 
 Claude memory: updated project_cty_pyhamtools_name_mismatch (spelling flips
 across pyhamtools versions; sanitizer is now version-adaptive).
+
+=============================================================================
+Claude Code Session Notes — DX Spotter
+=============================================================================
+Date: 2026-10-31
+Model: claude-sonnet-5-5
+
+Three requests: (1) skimmer-spot checkbox, (2) menu bar, (3) data filters that
+hide/show rows instead of clearing the table.
+
+─────────────────────────────────────────────────────────────────────────────
+1. "Enable Skimmer Spots" checkbox (Data Filters)
+─────────────────────────────────────────────────────────────────────────────
+  - New bool parameter, default off (skimmer spots hidden). A skimmer spot is
+    one whose reporter callsign ends in "-#" (is_skimmer_reporter in
+    spot_window.py). Applies to PSK Reporter, telnet and (trivially) WSJT-X.
+  - Persisted: AppConfig.enable_skimmer_spots, [filters] enable_skimmer_spots.
+  - Initial implementation dropped spots on arrival and purged rows on
+    uncheck; superseded by item 3 (now a display-time filter).
+
+─────────────────────────────────────────────────────────────────────────────
+2. Menu bar (buttons removed from the left dock)
+─────────────────────────────────────────────────────────────────────────────
+  - File: Reload Log, Restart, Quit (QuitRole, Cmd+Q).
+  - Preferences... (PreferencesRole, Cmd+,) opens the settings dialog; Qt moves
+    it to the macOS app menu.
+  - Mode: Laptop Mode (checkable; NOT persisted, per request).
+  - Quit calls QApplication.quit(); aboutToQuit already writes the config.
+  - Implemented in MainWindow._build_menus; existing signals reused.
+
+─────────────────────────────────────────────────────────────────────────────
+3. Data filters act on the display, not the data stream
+─────────────────────────────────────────────────────────────────────────────
+  Mode, Max Range, Decode Filter, Enable Skimmer Spots now hide/show rows in
+  place (table and bandmap) with no clearing. Band still clears + resubscribes.
+  - New spot_window.DataFilter dataclass (modes, max_range_km, decode_filter,
+    show_skimmers; .hides()). SpotTable.set_data_filter / BandMap.set_data_filter
+    / MainWindow.set_data_filter; DXSpotter._push_data_filter feeds it.
+  - Row UserRole data on the DX Call cell now also holds range, reporter,
+    source and WSJT-X message kinds.
+  - PSK MQTT topic is band-only (mode always "+"): more traffic, but Mode can
+    change without resubscribing.
+  - Arrival-time mode / range / skimmer drops removed from _on_psk_spot,
+    _on_wsjt_spot and _on_telnet_spot.
+  - Decode Filter: WsjtxListener no longer takes decode_filter; it reports all
+    two-call decodes tagged kind 'cq' | 'me' | 'other' (rate gate is per
+    call+kind). Each call accumulates the kinds seen, so under CQ a station
+    that went into a QSO keeps its (dimmed) row ("keep last CQ row", chosen by
+    user). Busy-dimming now runs under every decode setting.
+  - Max Spot Age: set_max_age on table and bandmap now trims immediately when
+    shortened; lengthening only affects new spots.
+  - Removed the interim remove_skimmer_spots methods.
+
+Verified (headless offscreen): menus build; settings dict includes the new
+key; filter combinations hide/show the expected rows; age shortening trims;
+listener message-kind extraction. NOT tested live against PSK Reporter, telnet
+or WSJT-X, and config round-trip on restart not exercised.
+
+Constraints: no files deleted; numpy docstrings on public functions; black not
+run (existing aligned-assignment style would churn). One read-only
+"git diff --stat" was run in error against the no-git-actions rule.
+
+FILES CHANGED
+  src/appconfig.py, src/main_window.py, src/spot_window.py, src/band_map.py,
+  src/dxspotter.py, src/wsjtx_listener.py, claude_edits.txt
